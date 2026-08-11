@@ -1,4 +1,6 @@
 import AppKit
+import Carbon.HIToolbox
+import Combine
 import SwiftUI
 
 @MainActor
@@ -11,6 +13,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var popover: NSPopover!
     private var serviceWindow: NSWindow?
     private var serviceHosting: NSHostingController<AnyView>?
+    private var hotKeyRef: EventHotKeyRef?
+    private let hotKeySignature: OSType = 0x72656D72 // "remr"
+    private var currentHotkeyCombo: KeyCombo?
+    private var settingsCancellables: Set<AnyCancellable> = []
 
     // MARK: - Lifecycle
 
@@ -39,7 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // No default open animation; closing is our own short fade (below).
         popover.animates = false
         popover.contentViewController = NSHostingController(
-            rootView: ContentView().environmentObject(store)
+            rootView: ContentView().environmentObject(store).environmentObject(SettingsStore.shared)
         )
         popover.contentSize = NSSize(width: 400, height: 600)
         self.popover = popover
@@ -49,6 +55,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self, let popover = self.popover, popover.isShown else { return }
                 self.closePopover()
             }
+        }
+
+        registerHotKey()
+
+        SettingsStore.shared.$bindings
+            .dropFirst()   // skip the initial value emission on subscribe
+            .sink { [weak self] _ in self?.reapplyHotKey() }
+            .store(in: &settingsCancellables)
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        if let hotKeyRef { UnregisterEventHotKey(hotKeyRef) }
+    }
+
+    private func registerHotKey() {
+        var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
+            DispatchQueue.main.async { AppDelegate.instance?.togglePopover() }
+            return noErr
+        }, 1, &eventType, nil, nil)
+        reapplyHotKey()
+    }
+
+    /// Register the current toggle combo; on failure (another app owns it), revert
+    /// the stored binding to the previously-working combo and surface an error.
+    private func reapplyHotKey() {
+        let combo = SettingsStore.shared.combo(for: .togglePopover)
+        guard combo != currentHotkeyCombo else { return }
+        let hotKeyID = EventHotKeyID(signature: hotKeySignature, id: 1)
+        if let hotKeyRef { UnregisterEventHotKey(hotKeyRef); self.hotKeyRef = nil }
+        // The user disabled the global hotkey: just unregister, nothing to bind.
+        if combo.isEmpty {
+            currentHotkeyCombo = combo
+            SettingsStore.shared.errorMessage = nil
+            return
+        }
+        guard let keyCode = combo.globalHotkeyKeyCode else {
+            // SettingsStore rejects modifier-less and non-single-key combos on
+            // assign; this is a defensive fallback for any other path in.
+            SettingsStore.shared.errorMessage = "The global shortcut needs exactly one key (e.g. ⌥⌘R)"
+            if let previous = currentHotkeyCombo {
+                SettingsStore.shared.assign(previous, to: .togglePopover)  // reverts + persists
+            }
+            return
+        }
+        var newRef: EventHotKeyRef?
+        let status = RegisterEventHotKey(UInt32(keyCode), combo.carbonModifierFlags, hotKeyID,
+                                         GetApplicationEventTarget(), 0, &newRef)
+        if status == noErr {
+            hotKeyRef = newRef
+            currentHotkeyCombo = combo
+            SettingsStore.shared.errorMessage = nil
+        } else {
+            // Re-register the old combo (just freed above) and revert the setting.
+            if let previous = currentHotkeyCombo, !previous.isEmpty,
+               let previousKeyCode = previous.globalHotkeyKeyCode {
+                RegisterEventHotKey(UInt32(previousKeyCode), previous.carbonModifierFlags, hotKeyID,
+                                    GetApplicationEventTarget(), 0, &hotKeyRef)
+                SettingsStore.shared.assign(previous, to: .togglePopover)  // reverts + persists
+            }
+            SettingsStore.shared.errorMessage = "“\(combo.displayString)” is already in use by another app"
         }
     }
 
@@ -60,10 +127,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // so the two don't stack.
             if popover.isShown { closePopover() }
             let menu = NSMenu()
-            menu.addItem(withTitle: "Refresh", action: #selector(refreshData), keyEquivalent: "")
+            let refreshItem = menu.addItem(withTitle: "Refresh", action: #selector(refreshData), keyEquivalent: "")
+            // Nil-target menu items resolve through the responder chain, which
+            // ends at NSApp and never includes the AppDelegate — Refresh would
+            // silently do nothing. Quit below keeps its nil target on purpose
+            // (NSApplication.terminate lives on NSApp, the chain's last link).
+            refreshItem.target = self
             menu.addItem(NSMenuItem.separator())
             menu.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-            statusItem.popUpMenu(menu)
+            // statusItem.popUpMenu(_:) is deprecated; pop the menu from the
+            // button directly. Deliberately NOT statusItem.menu — that would
+            // swallow left-clicks and break the popover toggle.
+            if let button = statusItem.button {
+                menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
+            }
         } else {
             togglePopover()
         }
@@ -83,6 +160,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 window.backgroundColor = .clear
             }
             popover.contentViewController?.view.window?.makeKey()
+            // Hardening: an .accessory app shown from the status item is not
+            // activated by the status-item click alone, and local NSEvent
+            // monitors only see hardware key events delivered to an active app.
+            // Activating here guarantees the popover (and its inline Settings
+            // view) receives keyboard input. Click-into-popover already
+            // activates; this makes the popover keyboard-usable immediately.
+            NSApp.activate(ignoringOtherApps: true)
         }
     }
 
@@ -90,15 +174,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// popover dismisses — the default close animation is disabled
     /// (`animates = false`). Fading the window (not just the content view)
     /// keeps the shadow and arrow in sync so there is no leftover frame.
-    private func closePopover() {
+    func closePopover() {
         guard popover.isShown, let window = popover.contentViewController?.view.window else { return }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.12
             context.allowsImplicitAnimation = true
             window.animator().alphaValue = 0
         } completionHandler: {
-            self.popover.performClose(nil)
-            window.alphaValue = 1
+            // The completion already runs on main; assumeIsolated silences the
+            // Sendable-closure warning on the SDKs that annotate it.
+            MainActor.assumeIsolated {
+                self.popover.performClose(nil)
+                window.alphaValue = 1
+            }
         }
     }
 

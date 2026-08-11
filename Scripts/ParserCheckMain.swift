@@ -42,9 +42,22 @@ struct ParserCheck {
     nowComps.minute = 47
     let now = Calendar.current.date(from: nowComps)!
 
+    // Fixed `now` for the weekday cases: 2026-08-11 13:26 local (Tuesday).
+    var tuesComps = DateComponents()
+    tuesComps.year = 2026
+    tuesComps.month = 8
+    tuesComps.day = 11
+    tuesComps.hour = 13
+    tuesComps.minute = 26
+    let tuesNow = Calendar.current.date(from: tuesComps)!
+
     let fixture = ["Home", "Work", "Groceries", "AH"]
 
     func parse(_ line: String, lists: [String]? = nil) -> ParsedReminder {
+        NaturalLanguageParser.parse(line, now: now, calendar: .current, listNames: lists ?? fixture)
+    }
+
+    func parseAt(_ line: String, now: Date, lists: [String]? = nil) -> ParsedReminder {
         NaturalLanguageParser.parse(line, now: now, calendar: .current, listNames: lists ?? fixture)
     }
 
@@ -221,7 +234,7 @@ struct ParserCheck {
         checkEqual(q.tags, ["urgent"], "search parse: tags")
         checkEqual(q.words, ["fix", "login"], "search parse: words")
         check(SearchParser.matches(query: q, calendarTitle: "Work", priority: 1,
-                                   title: "fix login bug", notes: "urgent"), "search matches: all")
+                                   title: "fix login bug", notes: "a #urgent followup"), "search matches: all")
         let qList = SearchParser.parse("@personal")
         check(!SearchParser.matches(query: qList, calendarTitle: "Work", priority: 0,
                                     title: "anything", notes: nil), "search matches: @personal fails")
@@ -230,6 +243,189 @@ struct ParserCheck {
                                     title: "fix login bug", notes: "urgent"), "search matches: billing fails")
         check(SearchParser.matches(query: SearchQuery(), calendarTitle: nil, priority: 0,
                                    title: "anything", notes: nil), "search matches: empty query")
+    }
+
+    // containsTag (tag filter rule)
+    do {
+        check(NaturalLanguageParser.containsTag("groceries", in: "buy milk #groceries"), "containsTag: exact token")
+        check(NaturalLanguageParser.containsTag("groceries", in: "buy milk #groceries #urgent"), "containsTag: among several")
+        check(NaturalLanguageParser.containsTag("urgent", in: "call #URGENT"), "containsTag: case-insensitive (input)")
+        check(NaturalLanguageParser.containsTag("Urgent", in: "call #urgent"), "containsTag: case-insensitive (filter)")
+        check(!NaturalLanguageParser.containsTag("urgent", in: "an urgent matter"), "containsTag: prose without # never matches")
+        check(!NaturalLanguageParser.containsTag("groceries", in: "buy groceries"), "containsTag: plain word never matches")
+        check(!NaturalLanguageParser.containsTag("milk", in: "buy #milkman"), "containsTag: substring token never matches")
+        check(!NaturalLanguageParser.containsTag("work", in: "no tags here"), "containsTag: empty of tags")
+        check(!NaturalLanguageParser.containsTag("work", in: ""), "containsTag: empty input")
+    }
+
+    // 21. next week → +7 days noon, all-day
+    do {
+        let r = parse("buy milk next week")
+        checkDate(r.dueDate, date(2026, 8, 16, 12, 0), "21 due (next week → +7 days noon)")
+        check(!r.hasTime, "21 hasTime false (all-day)")
+        checkEqual(r.title, "buy milk", "21 title")
+        check(!r.isInvalid, "21 valid")
+    }
+
+    // 22. this week → last day of the current week, noon
+    do {
+        let r = parse("buy milk this week")
+        let weekEnd = Calendar.current.dateInterval(of: .weekOfYear, for: now)!.end
+        let lastDay = Calendar.current.date(byAdding: .day, value: -1, to: weekEnd)!
+        let expected = Calendar.current.date(bySettingHour: 12, minute: 0, second: 0, of: lastDay)!
+        checkDate(r.dueDate, expected, "22 due (this week → last day of week, noon)")
+        check(!r.hasTime, "22 hasTime false (all-day)")
+    }
+
+    // 23. tonight after 18:00 stays today
+    do {
+        var c = DateComponents()
+        c.year = 2026; c.month = 8; c.day = 9; c.hour = 19; c.minute = 0
+        let lateNow = Calendar.current.date(from: c)!
+        let r = NaturalLanguageParser.parse("clean kitchen tonight", now: lateNow, calendar: .current, listNames: fixture)
+        checkDate(r.dueDate, date(2026, 8, 9, 18, 0), "23 due (tonight at 19:00 stays today)")
+        check(r.hasTime, "23 hasTime")
+    }
+
+    // 24. later/eod/end of day after 17:00 stays today
+    do {
+        var c = DateComponents()
+        c.year = 2026; c.month = 8; c.day = 9; c.hour = 18; c.minute = 0
+        let lateNow = Calendar.current.date(from: c)!
+        for line in ["buy milk later", "buy milk eod", "buy milk end of day"] {
+            let r = NaturalLanguageParser.parse(line, now: lateNow, calendar: .current, listNames: fixture)
+            checkDate(r.dueDate, date(2026, 8, 9, 17, 0), "24 due (\(line) at 18:00 stays today 17:00)")
+            check(r.hasTime, "24 hasTime (\(line))")
+        }
+    }
+
+    // 25. in a week == in 1 week
+    do {
+        let aWeek = parse("buy milk in a week")
+        let oneWeek = parse("buy milk in 1 week")
+        checkDate(aWeek.dueDate, date(2026, 8, 16, 12, 0), "25 due (in a week → +7 days noon)")
+        checkDate(oneWeek.dueDate, date(2026, 8, 16, 12, 0), "25 due (in 1 week → +7 days noon)")
+        check(!aWeek.hasTime, "25 hasTime false (in a week all-day)")
+        check(!oneWeek.hasTime, "25 hasTime false (in 1 week all-day)")
+    }
+
+    // 26. !! with a following priority word
+    do {
+        let r = parse("!! high priority buy milk")
+        checkEqual(r.priority, 1, "26 priority (!! wins)")
+        checkEqual(r.title, "buy milk", "26 title")
+    }
+
+    // 27. bare priority not in compounds
+    do {
+        let compound = parse("buy low-fat milk")
+        checkEqual(compound.priority, 0, "27 priority (low-fat not a priority)")
+        checkEqual(compound.title, "buy low-fat milk", "27 title intact")
+        let list = parse("meet @p1")
+        checkEqual(list.priority, 0, "27 priority (@p1 not a priority)")
+        checkEqual(list.listToken, "p1", "27 list token")
+        check(!list.listMatched, "27 list unmatched")
+        checkEqual(list.title, "meet", "27 title")
+    }
+
+    // 28. tomorrow night keeps its time
+    do {
+        let r = parse("buy milk tomorrow night")
+        checkDate(r.dueDate, date(2026, 8, 10, 18, 0), "28 due (tomorrow night → 18:00)")
+        check(r.hasTime, "28 hasTime")
+    }
+
+    // 29. trailing punctuation stripped with the date
+    do {
+        for line in ["buy milk tomorrow,", "buy milk tomorrow.", "buy milk tomorrow!"] {
+            let r = parse(line)
+            checkEqual(r.title, "buy milk", "29 title (\(line))")
+            checkDate(r.dueDate, date(2026, 8, 10, 12, 0), "29 due (\(line))")
+        }
+    }
+
+    // 30. "in 2 days" with a clock time, phrase mid-line
+    do {
+        let r = parse("meet at 5pm in 2 days")
+        checkDate(r.dueDate, date(2026, 8, 11, 17, 0), "30 due (5pm in 2 days → 8/11 17:00)")
+        check(r.hasTime, "30 hasTime")
+        checkEqual(r.title, "meet", "30 title")
+    }
+
+    // 31. split date + bare time merged ("friday by 5pm")
+    do {
+        let r = parse("pay rent friday by 5pm")
+        checkDate(r.dueDate, date(2026, 8, 14, 17, 0), "31 due (friday 17:00)")
+        check(r.hasTime, "31 hasTime")
+        checkEqual(r.title, "pay rent", "31 title")
+    }
+
+    // 32. "tomorrow before 5pm" keeps the time
+    do {
+        let r = parse("call tomorrow before 5pm")
+        checkDate(r.dueDate, date(2026, 8, 10, 17, 0), "32 due (tomorrow 17:00)")
+        check(r.hasTime, "32 hasTime")
+        checkEqual(r.title, "call", "32 title")
+    }
+
+    // 33. day after tomorrow = +2 (with time)
+    do {
+        let r = parse("meet the day after tomorrow at 5pm")
+        checkDate(r.dueDate, date(2026, 8, 11, 17, 0), "33 due (day after tomorrow 17:00)")
+        check(r.hasTime, "33 hasTime")
+        checkEqual(r.title, "meet", "33 title")
+    }
+
+    // 34. day before yesterday = −2
+    do {
+        let r = parse("meet the day before yesterday")
+        checkDate(r.dueDate, date(2026, 8, 7, 12, 0), "34 due (day before yesterday)")
+        check(!r.hasTime, "34 hasTime false")
+        checkEqual(r.title, "meet", "34 title")
+    }
+
+    // 35. priority words inside #tag tokens are not priorities
+    do {
+        let r = parse("buy milk #p3")
+        checkEqual(r.priority, 0, "35 priority (token-internal p3)")
+        checkEqual(r.tags, ["p3"], "35 tags")
+        checkEqual(r.title, "buy milk", "35 title")
+    }
+
+    // 36. noon keyword (rolls when past)
+    do {
+        let r = parse("call noon")
+        checkDate(r.dueDate, date(2026, 8, 10, 12, 0), "36 due (noon past → next noon)")
+        check(r.hasTime, "36 hasTime")
+        checkEqual(r.title, "call", "36 title")
+    }
+
+    // 37. midnight keyword (rolls when past)
+    do {
+        let r = parse("call midnight")
+        checkDate(r.dueDate, date(2026, 8, 10, 0, 0), "37 due (midnight past → tomorrow 00:00)")
+        check(r.hasTime, "37 hasTime")
+        checkEqual(r.title, "call", "37 title")
+    }
+
+    // 38. "next X" from a Tuesday now (at-or-after + 7)
+    do {
+        let rSat = parseAt("call next saturday", now: tuesNow)
+        checkDate(rSat.dueDate, date(2026, 8, 22, 12, 0), "38 due (next saturday from Tue = +11)")
+        checkEqual(rSat.title, "call", "38 title")
+        let rMon = parseAt("call next monday", now: tuesNow)
+        checkDate(rMon.dueDate, date(2026, 8, 24, 12, 0), "38 due (next monday from Tue = +13)")
+        checkEqual(rMon.title, "call", "38 title monday")
+    }
+
+    // 39. #tag search is token-exact; trailing punctuation stripped
+    do {
+        let q = SearchParser.parse("#urgent")
+        check(SearchParser.matches(query: q, calendarTitle: "Work", priority: 0,
+                                   title: "call #urgent", notes: nil), "39 search: #urgent token matches")
+        check(!SearchParser.matches(query: q, calendarTitle: "Work", priority: 0,
+                                    title: "an urgent matter", notes: nil), "39 search: prose #urgent never matches")
+        checkEqual(NaturalLanguageParser.extractTags(from: "buy milk #urgent."), ["urgent"], "39 extractTags: punctuation stripped")
     }
 
     print("Parser check: \(passed) passed, \(failures) failed")

@@ -3,7 +3,8 @@ import Foundation
 
 /// Forward-geocodes location phrases for reminder location alarms.
 /// Successes are cached; failures are retried on the next call.
-final class LocationGeocoder: @unchecked Sendable {
+@MainActor
+final class LocationGeocoder {
     static let shared = LocationGeocoder()
 
     private var cache: [String: CLLocation] = [:]

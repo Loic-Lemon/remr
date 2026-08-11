@@ -13,7 +13,10 @@ you type. Everything stays in sync with the Reminders app in both directions.
 - **Keyword autocomplete** — start typing a date or priority and press Tab to complete it.
 - **Quick description** — a notes box appears as you type; Enter creates, Shift+Enter adds a line.
 - **Overdue / Today / Later** — the whole list in one popover, no Dock icon needed.
+- **Keyboard-first** — arrows move the selection, Enter completes, ⌘Enter opens in Reminders, ⌫ deletes, Tab hops title → notes → search → list, Esc steps back.
+- **Customizable shortcuts** — every shortcut is rebindable in Settings (gear icon or ⌘,), including the global hotkey that opens remr from anywhere (⌥⌘R by default).
 - **Search** — filter by list (`@work`), tag (`#urgent`), priority (`!!`), or any text, all combinable.
+- **Tag filtering** — click any `#tag` chip to show only reminders with that tag; click it again (or the ✕) to clear. The filter sticks across launches until you change it.
 - **Tags** — `#groceries` gets a colored chip; right-click a chip to recolor it.
 - **Recently Completed & Recently Deleted** — mistakes are recoverable: deleted reminders can be restored.
 - **Location reminders** — `at the office` attaches a geofenced alarm.
@@ -50,14 +53,43 @@ The search field filters the list; all conditions combine:
 | You type | Matches |
 |---|---|
 | `@work` | Only the Work list |
-| `#urgent` | Titles or notes containing the tag |
+| `#urgent` | Titles or notes tagged with it |
 | `!!` | High priority only |
 | `text` | Any title or note containing it |
+
+Click any `#tag` chip to filter the whole list to that tag (search still
+combines with it); click the active chip again — or the ✕ next to the filter —
+to clear. The filter persists across launches as the app's default view.
+
+## Keyboard
+
+Once the list is focused (Tab into it from the search field), the whole
+popover runs from the keyboard:
+
+| Keys | Action |
+|---|---|
+| `⌥⌘R` | Open remr from anywhere (global hotkey) |
+| `↑` / `↓` | Move the selection |
+| `Page Up` / `Page Down` | Move by a page |
+| `Space` / `⇧Space` | Scroll |
+| `Enter` | Complete a reminder (restore a deleted one, expand a tab) |
+| `⌘Enter` | Open in Reminders |
+| `⌫` | Delete (delete forever in Recently Deleted) |
+| `←` | Open / close Recently Completed and Recently Deleted |
+| `Tab` | Next field: title → notes → search → list (Shift+Tab goes back) |
+| `⌘F` | Focus search |
+| `Esc` | Step back: clear the selection, then the search, then close |
+
+Every shortcut is rebindable. Click the gear icon in the popover — or press
+**⌘,** — to open Settings, click a keycap to capture a new chord, then Save;
+changes apply immediately and persist across launches, and **Reset to
+defaults** restores the table above. The global hotkey must be exactly one
+plain key plus any modifiers.
 
 ## Managing reminders
 
 - Click the circle to complete it — it lands in **Recently Completed**.
-- Swipe a row left (or right-click → Delete) to delete it. EventKit has no trash, so remr keeps a local shadow copy: restore it from **Recently Deleted** while it's listed, or delete it forever there.
+- Right-click a row → Delete to delete it. EventKit has no trash, so remr keeps a local shadow copy: restore it from **Recently Deleted** while it's listed, or delete it forever there.
 - Click a row to open the reminder in Reminders.
 - Right-click the menu bar icon for **Refresh** and **Quit**.
 
@@ -77,7 +109,9 @@ Scripts/make-bundle.sh # produces build/Build/Products/Debug/remr.app
 
 `make-bundle.sh` assembles and ad-hoc signs a proper `.app` bundle (the
 Reminders entitlement is applied automatically). Copy `remr.app` to
-`/Applications`, or run the bare binary with `swift run remr`.
+`/Applications` — that's the way to run remr day-to-day. The bare binary
+(`swift run remr`) is unsigned and lacks the Reminders entitlement, so it
+can't access your reminders; use it only to smoke-test the build.
 
 On first launch, grant Reminders access when prompted. If you denied it,
 enable it under **System Settings → Privacy & Security → Reminders**.

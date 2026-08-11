@@ -23,7 +23,14 @@ final class TagStore: ObservableObject {
     ]
 
     init() {
-        overrides = defaults.dictionary(forKey: overrideKey) as? [String: Int] ?? [:]
+        // One non-Int entry must not discard all overrides.
+        overrides = defaults.dictionary(forKey: overrideKey)?.compactMapValues { $0 as? Int } ?? [:]
+    }
+
+    /// Wrap any index into the palette (handles negatives and overflow from
+    /// persisted or computed values).
+    private static func clamp(_ i: Int) -> Int {
+        ((i % Self.palette.count) + Self.palette.count) % Self.palette.count
     }
 
     /// Palette color for a tag: user override if set, else a stable hash so
@@ -34,12 +41,12 @@ final class TagStore: ObservableObject {
 
     func paletteIndex(for tag: String) -> Int {
         let key = tag.lowercased()
-        if let idx = overrides[key] { return idx % Self.palette.count }
+        if let idx = overrides[key] { return Self.clamp(idx) }
         return Self.stableHash(key) % Self.palette.count
     }
 
     func setColor(for tag: String, paletteIndex: Int) {
-        overrides[tag.lowercased()] = paletteIndex % Self.palette.count
+        overrides[tag.lowercased()] = Self.clamp(paletteIndex)
         defaults.set(overrides, forKey: overrideKey)
     }
 

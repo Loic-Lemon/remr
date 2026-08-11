@@ -19,7 +19,7 @@ final class SearchParserTests: XCTestCase {
     func testMatchesTrue() {
         let q = SearchParser.parse("!! @work #urgent fix login")
         XCTAssertTrue(SearchParser.matches(query: q, calendarTitle: "Work", priority: 1,
-                                           title: "fix login bug", notes: "urgent"))
+                                           title: "fix login bug", notes: "a #urgent followup"))
     }
 
     func testMatchesListMismatchFails() {
@@ -49,5 +49,19 @@ final class SearchParserTests: XCTestCase {
     func testEmptyQueryMatchesEverything() {
         XCTAssertTrue(SearchParser.matches(query: SearchQuery(), calendarTitle: nil, priority: 0,
                                            title: "anything", notes: nil))
+    }
+
+    func testTagQueryMatchesOnlyTaggedText() {
+        // `#urgent` matches the #token exactly (same rule as the chip filter),
+        // not prose that merely contains the word.
+        let q = SearchParser.parse("#urgent")
+        XCTAssertTrue(SearchParser.matches(query: q, calendarTitle: "Work", priority: 0,
+                                           title: "call #urgent", notes: nil))
+        XCTAssertFalse(SearchParser.matches(query: q, calendarTitle: "Work", priority: 0,
+                                            title: "an urgent matter", notes: nil))
+    }
+
+    func testTagTrailingPunctuationStripped() {
+        XCTAssertEqual(NaturalLanguageParser.extractTags(from: "buy milk #urgent."), ["urgent"])
     }
 }

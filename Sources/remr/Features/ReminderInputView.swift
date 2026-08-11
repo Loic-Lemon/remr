@@ -9,6 +9,14 @@ final class EnterSubmitTextView: NSTextView {
     /// If set, any Return (plain or Shift) calls this instead of submitting
     /// or inserting a newline — used by the single-line title field.
     var onMoveDown: (() -> Void)?
+    /// True for the single-line title field: plain Return moves to the next
+    /// field (via `onMoveDown`) instead of submitting. Multi-line fields
+    /// (notes) keep this false so plain Return submits and Shift+Return
+    /// inserts a newline. Dispatch keys off this flag, NOT off `onMoveDown`
+    /// being non-nil — the wiring always assigns that closure (as a no-op
+    /// when the field has no move-down action), so closure nil-ness would
+    /// dead-key Return in the notes field.
+    var movesDownOnReturn = false
     /// Test hook; nil at runtime, set by tests to simulate Shift.
     var modifierFlagsOverride: NSEvent.ModifierFlags?
     /// Last focusRequest applied; the representable bumps it to grab focus.
@@ -20,6 +28,12 @@ final class EnterSubmitTextView: NSTextView {
     var dropdownActive = false
     var onNavigate: ((_ up: Bool) -> Void)?
     var onDismiss: (() -> Void)?
+    /// Tab with no dropdown advances focus to the next field.
+    var onFocusForward: (() -> Void)?
+    /// Shift+Tab moves focus to the previous field.
+    var onFocusBack: (() -> Void)?
+    /// Escape with no dropdown steps back (clear selection / close popover).
+    var onEscape: (() -> Void)?
     /// Reports first-responder transitions (drives dropdown visibility).
     var onFocusChange: ((Bool) -> Void)?
     /// Last external replace-token request applied (accepting a suggestion).
@@ -42,8 +56,8 @@ final class EnterSubmitTextView: NSTextView {
     }
 
     override func insertNewline(_ sender: Any?) {
-        if let onMoveDown {
-            onMoveDown()
+        if movesDownOnReturn {
+            onMoveDown?()
         } else if effectiveModifiers.contains(.shift) {
             super.insertNewline(sender)
         } else {
@@ -66,6 +80,16 @@ final class EnterSubmitTextView: NSTextView {
     override func insertTab(_ sender: Any?) {
         if dropdownActive {
             onMoveDown?()  // Tab accepts the highlighted suggestion
+        } else {
+            onFocusForward?()  // advance focus; no tab character is inserted
+        }
+    }
+
+    override func insertBacktab(_ sender: Any?) {
+        if let onFocusBack {
+            onFocusBack()
+        } else {
+            super.insertBacktab(sender)
         }
     }
 
@@ -89,7 +113,7 @@ final class EnterSubmitTextView: NSTextView {
         if dropdownActive {
             onDismiss?()
         } else {
-            super.cancelOperation(sender)
+            onEscape?()
         }
     }
 
@@ -147,6 +171,12 @@ struct ReminderInputView: NSViewRepresentable {
     var dropdownActive = false
     var onNavigate: ((_ up: Bool) -> Void)? = nil
     var onDismiss: (() -> Void)? = nil
+    /// Tab with no dropdown advances focus to the next field.
+    var onFocusForward: (() -> Void)? = nil
+    /// Shift+Tab moves focus to the previous field.
+    var onFocusBack: (() -> Void)? = nil
+    /// Escape with no dropdown steps back (clear selection / close popover).
+    var onEscape: (() -> Void)? = nil
     /// Bump to replace the token under the caret (accept a suggestion).
     var replaceTokenRequest = 0
     var replaceTokenWith = ""
@@ -169,9 +199,13 @@ struct ReminderInputView: NSViewRepresentable {
         textView.delegate = context.coordinator
         textView.onSubmit = { context.coordinator.parent.onSubmit() }
         textView.onMoveDown = { context.coordinator.parent.onMoveDown?() }
+        textView.movesDownOnReturn = context.coordinator.parent.onMoveDown != nil
         textView.onAppearInWindow = { context.coordinator.parent.onAppearInWindow?() }
         textView.onNavigate = { context.coordinator.parent.onNavigate?($0) }
         textView.onDismiss = { context.coordinator.parent.onDismiss?() }
+        textView.onFocusForward = { context.coordinator.parent.onFocusForward?() }
+        textView.onFocusBack = { context.coordinator.parent.onFocusBack?() }
+        textView.onEscape = { context.coordinator.parent.onEscape?() }
         textView.onFocusChange = { context.coordinator.parent.onFocusChange?($0) }
         scrollView.documentView = textView
         scrollView.drawsBackground = false
@@ -182,6 +216,9 @@ struct ReminderInputView: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let textView = scrollView.documentView as? EnterSubmitTextView else { return }
+        // Dispatch keys off movesDownOnReturn (not closure nil-ness), so the
+        // notes field's no-op onMoveDown closure can never dead-key Return.
+        textView.movesDownOnReturn = context.coordinator.parent.onMoveDown != nil
         textView.dropdownActive = dropdownActive
         if textView.appliedReplaceTokenRequest != replaceTokenRequest {
             textView.appliedReplaceTokenRequest = replaceTokenRequest

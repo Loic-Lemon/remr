@@ -14,9 +14,24 @@ final class NaturalLanguageParserTests: XCTestCase {
         return Calendar.current.date(from: c)!
     }()
 
+    /// Fixed `now` for the weekday cases: 2026-08-11 13:26 local (Tuesday).
+    private let tuesdayNow: Date = {
+        var c = DateComponents()
+        c.year = 2026
+        c.month = 8
+        c.day = 11
+        c.hour = 13
+        c.minute = 26
+        return Calendar.current.date(from: c)!
+    }()
+
     private let fixture = ["Home", "Work", "Groceries", "AH"]
 
     private func parse(_ line: String, lists: [String]? = nil) -> ParsedReminder {
+        NaturalLanguageParser.parse(line, now: now, calendar: .current, listNames: lists ?? fixture)
+    }
+
+    private func parseAt(_ line: String, now: Date, lists: [String]? = nil) -> ParsedReminder {
         NaturalLanguageParser.parse(line, now: now, calendar: .current, listNames: lists ?? fixture)
     }
 
@@ -217,5 +232,251 @@ final class NaturalLanguageParserTests: XCTestCase {
         let r = parse("drink water")
         XCTAssertNil(r.dueDate)
         XCTAssertEqual(r.title, "drink water")
+    }
+
+    // MARK: - containsTag (tag filter rule)
+
+    func test27ContainsTagExactToken() {
+        XCTAssertTrue(NaturalLanguageParser.containsTag("groceries", in: "buy milk #groceries"))
+        XCTAssertTrue(NaturalLanguageParser.containsTag("groceries", in: "buy milk #groceries #urgent"))
+    }
+
+    func test28ContainsTagCaseInsensitive() {
+        XCTAssertTrue(NaturalLanguageParser.containsTag("urgent", in: "call #URGENT"))
+        XCTAssertTrue(NaturalLanguageParser.containsTag("Urgent", in: "call #urgent"))
+    }
+
+    func test29ContainsTagNotSubstring() {
+        // Prose mentions without a #token never match (unlike search).
+        XCTAssertFalse(NaturalLanguageParser.containsTag("urgent", in: "an urgent matter"))
+        XCTAssertFalse(NaturalLanguageParser.containsTag("groceries", in: "buy groceries"))
+        // A different token containing the tag as a substring doesn't match.
+        XCTAssertFalse(NaturalLanguageParser.containsTag("milk", in: "buy #milkman"))
+    }
+
+    func test30ContainsTagNoHashInput() {
+        XCTAssertFalse(NaturalLanguageParser.containsTag("work", in: "no tags here"))
+        XCTAssertFalse(NaturalLanguageParser.containsTag("work", in: ""))
+    }
+
+    // MARK: - Regression: UTF-16 safety, relative-date math, list matching
+
+    func test31EmojiBeforeDateDoesNotCrash() {
+        // Non-BMP characters shift NSRange (UTF-16) offsets away from
+        // Character indices; the old conversion crashed on "🎉 party tomorrow".
+        let r = parse("🎉 party tomorrow")
+        XCTAssertEqual(r.title, "🎉 party")
+        assertDate(r.dueDate, date(2026, 8, 10, 12, 0), "emoji before a date still parses")
+        XCTAssertFalse(r.hasTime)
+    }
+
+    func test32EmojiBeforeListToken() {
+        let r = parse("🏠 @home milk")
+        XCTAssertEqual(r.listToken, "home")
+        XCTAssertTrue(r.listMatched)
+        XCTAssertEqual(r.title, "🏠 milk")
+    }
+
+    func test33InTwoDaysAtTimeKeepsTime() {
+        // The relative-day rebase used to force noon, so a timed phrase
+        // "in 2 days at 5pm" became an all-day noon due date.
+        let r = parse("pay rent in 2 days at 5pm")
+        assertDate(r.dueDate, date(2026, 8, 11, 17, 0), "timed relative date keeps 17:00")
+        XCTAssertTrue(r.hasTime)
+        XCTAssertEqual(r.title, "pay rent")
+    }
+
+    func test34InTwoWeeksAddsWeeksNotDays() {
+        // The rebase ignored the unit: "in 2 weeks" landed 2 days out.
+        let r = parse("submit in 2 weeks at 9am")
+        assertDate(r.dueDate, date(2026, 8, 23, 9, 0), "2 weeks = 14 days, time preserved")
+        XCTAssertTrue(r.hasTime)
+        XCTAssertEqual(r.title, "submit")
+    }
+
+    func test35NextWeekdaySkipsCurrentWeek() {
+        // "next tuesday" from a Sunday is the tuesday after the coming one
+        // (8/18), not this week's tuesday (8/11).
+        let r = parse("call next tuesday")
+        assertDate(r.dueDate, date(2026, 8, 18, 12, 0), "\"next\" shifts a full week")
+        XCTAssertEqual(r.title, "call")
+    }
+
+    func test36EmailAtSignIsNotAListToken() {
+        // "john@home.example" used to match the "Home" list by substring and
+        // get stripped from the title.
+        let r = parse("Email john@home.example about the party")
+        XCTAssertNil(r.listToken)
+        XCTAssertFalse(r.listMatched)
+        XCTAssertEqual(r.title, "Email john@home.example about the party")
+    }
+
+    // MARK: - Regression: autocomplete keywords, rollover, priority compounds
+
+    func test37NextWeekPlus7Days() {
+        // "next week" (autocomplete keyword) now resolves: exactly +7 days
+        // from today at noon, all-day — consistent with "in 1 week".
+        let r = parse("buy milk next week")
+        assertDate(r.dueDate, date(2026, 8, 16, 12, 0), "next week → +7 days, noon")
+        XCTAssertFalse(r.hasTime, "next week is all-day")
+        XCTAssertEqual(r.title, "buy milk")
+        XCTAssertFalse(r.isInvalid)
+    }
+
+    func test38ThisWeekEndsCurrentWeek() {
+        // "this week" (autocomplete keyword) → last day of the current week,
+        // noon. Compute the expectation with the same calendar call so the
+        // locale-dependent week start can't drift the assertion.
+        let r = parse("buy milk this week")
+        let weekEnd = Calendar.current.dateInterval(of: .weekOfYear, for: now)!.end
+        let lastDay = Calendar.current.date(byAdding: .day, value: -1, to: weekEnd)!
+        let expected = Calendar.current.date(bySettingHour: 12, minute: 0, second: 0, of: lastDay)!
+        assertDate(r.dueDate, expected, "this week → last day of current week, noon")
+        XCTAssertFalse(r.hasTime, "this week is all-day")
+    }
+
+    func test39TonightLateStaysToday() {
+        // "tonight" after 18:00 must stay today 18:00, not roll to tomorrow.
+        let r = NaturalLanguageParser.parse("clean kitchen tonight", now: date(2026, 8, 9, 19, 0),
+                                            calendar: .current, listNames: fixture)
+        assertDate(r.dueDate, date(2026, 8, 9, 18, 0), "tonight at 19:00 stays today")
+        XCTAssertTrue(r.hasTime)
+    }
+
+    func test40LaterEodAfterEodHourStaysToday() {
+        // "later"/"eod"/"end of day" typed after 17:00 are explicit "today
+        // 17:00" — keyword-layer dates never roll to tomorrow.
+        for line in ["buy milk later", "buy milk eod", "buy milk end of day"] {
+            let r = NaturalLanguageParser.parse(line, now: date(2026, 8, 9, 18, 0),
+                                                calendar: .current, listNames: fixture)
+            assertDate(r.dueDate, date(2026, 8, 9, 17, 0), "\(line) at 18:00 stays today 17:00")
+            XCTAssertTrue(r.hasTime, "\(line) is timed")
+        }
+    }
+
+    func test41InAWeekEqualsIn1Week() {
+        // "in a week" (keyword) must agree with "in 1 week" (detector): both
+        // noon of +7 days, all-day.
+        let aWeek = parse("buy milk in a week")
+        let oneWeek = parse("buy milk in 1 week")
+        assertDate(aWeek.dueDate, date(2026, 8, 16, 12, 0), "in a week → +7 days, noon")
+        assertDate(oneWeek.dueDate, date(2026, 8, 16, 12, 0), "in 1 week → +7 days, noon")
+        XCTAssertFalse(aWeek.hasTime, "in a week is all-day")
+        XCTAssertFalse(oneWeek.hasTime, "in 1 week is all-day")
+    }
+
+    func test42BangBangWithPriorityWord() {
+        // Leading "!!" wins and must not leave the following priority word in
+        // the title.
+        let r = parse("!! high priority buy milk")
+        XCTAssertEqual(r.priority, 1, "!! sets priority 1")
+        XCTAssertEqual(r.title, "buy milk")
+    }
+
+    func test43BarePriorityNotInCompound() {
+        // Bare priority keywords are standalone tokens only: "low-fat" keeps
+        // its prefix, "@p1" is a list token, not a priority.
+        let compound = parse("buy low-fat milk")
+        XCTAssertEqual(compound.priority, 0, "low-fat is not a priority")
+        XCTAssertEqual(compound.title, "buy low-fat milk")
+        let list = parse("meet @p1")
+        XCTAssertEqual(list.priority, 0, "@p1 is not a priority")
+        XCTAssertEqual(list.listToken, "p1")
+        XCTAssertFalse(list.listMatched)
+        XCTAssertEqual(list.title, "meet")
+    }
+
+    func test44TomorrowNightHasTime() {
+        // "tomorrow night" keeps its clock: tomorrow 18:00, timed.
+        let r = parse("buy milk tomorrow night")
+        assertDate(r.dueDate, date(2026, 8, 10, 18, 0), "tomorrow night → tomorrow 18:00")
+        XCTAssertTrue(r.hasTime)
+    }
+
+    func test45TrailingPunctuationStripped() {
+        // Sentence punctuation left dangling by a date strip is removed too.
+        for line in ["buy milk tomorrow,", "buy milk tomorrow.", "buy milk tomorrow!"] {
+            let r = parse(line)
+            XCTAssertEqual(r.title, "buy milk", "\(line) → clean title")
+            assertDate(r.dueDate, date(2026, 8, 10, 12, 0), "\(line) due")
+        }
+    }
+
+    // MARK: - Fix batch: relative dates, split date+time, token safety, noon/midnight
+
+    func test46InDaysWithTimeAnywhere() {
+        // "in 2 days" used to be ignored unless the phrase started the line.
+        let r = parse("meet at 5pm in 2 days")
+        assertDate(r.dueDate, date(2026, 8, 11, 17, 0), "5pm in 2 days → 8/11 17:00")
+        XCTAssertTrue(r.hasTime)
+        XCTAssertEqual(r.title, "meet")
+    }
+
+    func test47SplitDateBareTimeMerged() {
+        // Detector can split "friday by 5pm" into a date-only and a bare-time match.
+        let r = parse("pay rent friday by 5pm")
+        assertDate(r.dueDate, date(2026, 8, 14, 17, 0), "friday 17:00")
+        XCTAssertTrue(r.hasTime)
+        XCTAssertEqual(r.title, "pay rent")
+    }
+
+    func test48TomorrowBeforeTimeMerged() {
+        let r = parse("call tomorrow before 5pm")
+        assertDate(r.dueDate, date(2026, 8, 10, 17, 0), "tomorrow 17:00")
+        XCTAssertTrue(r.hasTime)
+        XCTAssertEqual(r.title, "call")
+    }
+
+    func test49DayAfterTomorrow() {
+        let r = parse("meet the day after tomorrow at 5pm")
+        assertDate(r.dueDate, date(2026, 8, 11, 17, 0), "day after tomorrow = +2, time kept")
+        XCTAssertTrue(r.hasTime)
+        XCTAssertEqual(r.title, "meet")
+    }
+
+    func test50DayBeforeYesterday() {
+        let r = parse("meet the day before yesterday")
+        assertDate(r.dueDate, date(2026, 8, 7, 12, 0), "day before yesterday = −2")
+        XCTAssertFalse(r.hasTime)
+        XCTAssertEqual(r.title, "meet")
+    }
+
+    func test51PriorityNotInsideTagOrListToken() {
+        // Bare priority words must not match inside #tag / @list tokens.
+        let r = parse("buy milk #p3")
+        XCTAssertEqual(r.priority, 0)
+        XCTAssertEqual(r.tags, ["p3"])
+        XCTAssertEqual(r.title, "buy milk")
+    }
+
+    func test52NoonKeywordRollsOver() {
+        // 12:00 on the fixture day is past 12:47 → bare-clock rollover.
+        let r = parse("call noon")
+        assertDate(r.dueDate, date(2026, 8, 10, 12, 0), "noon past → next noon")
+        XCTAssertTrue(r.hasTime)
+        XCTAssertEqual(r.title, "call")
+    }
+
+    func test53MidnightKeywordRollsOver() {
+        let r = parse("call midnight")
+        assertDate(r.dueDate, date(2026, 8, 10, 0, 0), "midnight past → tomorrow 00:00")
+        XCTAssertTrue(r.hasTime)
+        XCTAssertEqual(r.title, "call")
+    }
+
+    func test54NextWeekdayTuesdayFixture() {
+        // Pins the at-or-after + 7 "next X" rule from a Tuesday now.
+        let rSat = parseAt("call next saturday", now: tuesdayNow)
+        assertDate(rSat.dueDate, date(2026, 8, 22, 12, 0), "next saturday from Tue = +11")
+        XCTAssertEqual(rSat.title, "call")
+        let rMon = parseAt("call next monday", now: tuesdayNow)
+        assertDate(rMon.dueDate, date(2026, 8, 24, 12, 0), "next monday from Tue = +13 (at-or-after + 7)")
+        XCTAssertEqual(rMon.title, "call")
+    }
+
+    func test55TagTrailingPunctuationStripped() {
+        // "#urgent." must yield the same tag as "#urgent" so chips, filter,
+        // and search agree.
+        XCTAssertEqual(NaturalLanguageParser.extractTags(from: "buy milk #urgent."), ["urgent"])
     }
 }

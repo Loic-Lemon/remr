@@ -18,15 +18,28 @@ struct GuideView: View {
                     GuideRow(example: "#groceries", explanation: "Tags it (colored chip, right-click to recolor)")
                     GuideRow(example: "Description", explanation: "A box appears as you type")
                 }
+                GuideSection(title: "Keyboard") {
+                    GuideRow(example: "⌥⌘R", explanation: "Open remr from anywhere")
+                    GuideRow(example: "↑ ↓", explanation: "Move through the list")
+                    GuideRow(example: "Tab", explanation: "Next field: title → notes → search → list")
+                    GuideRow(example: "Enter", explanation: "Complete (restore, expand a tab)")
+                    GuideRow(example: "⌘⏎", explanation: "Open in Reminders")
+                    GuideRow(example: "⌫", explanation: "Delete")
+                    GuideRow(example: "←", explanation: "Open & close Recently Completed / Deleted")
+                    GuideRow(example: "⌘F", explanation: "Search")
+                    GuideRow(example: "Esc", explanation: "Step back: clear selection, then close")
+                    GuideRow(example: "Space", explanation: "Scroll")
+                    GuideRow(example: "Gear icon", explanation: "Customize these shortcuts in Settings")
+                }
                 GuideSection(title: "Search") {
                     GuideRow(example: "@list", explanation: "Only that list")
-                    GuideRow(example: "#tag", explanation: "Titles or notes containing it")
+                    GuideRow(example: "#tag", explanation: "Titles or notes tagged with it")
                     GuideRow(example: "!!", explanation: "High priority only")
                     GuideRow(example: "text", explanation: "Matches title or notes")
+                    GuideRow(example: "Click a #tag chip", explanation: "Show only reminders with it — sticks until you change it")
                 }
                 GuideSection(title: "Manage") {
                     GuideRow(example: "Tick the circle", explanation: "Mark complete")
-                    GuideRow(example: "Swipe left", explanation: "Delete the reminder")
                     GuideRow(example: "Click a row", explanation: "Open it in Reminders")
                     GuideRow(example: "Right-click a row", explanation: "More options: complete, open, delete")
                     GuideRow(example: "Delete a row", explanation: "It lands in Recently Deleted — restore it there")

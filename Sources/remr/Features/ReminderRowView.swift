@@ -7,11 +7,13 @@ import SwiftUI
 struct ReminderRowView: View {
     @EnvironmentObject var store: ReminderStore
     let reminder: EKReminder
+    /// Keyboard-selection highlight (accent fill, same as the suggestion dropdown).
+    var isSelected: Bool = false
     /// Called after the reminder was just completed (for the completion toast).
     var onComplete: ((EKReminder) -> Void)? = nil
 
     private func toggleComplete() {
-        Task {
+        Task { @MainActor in
             await store.toggleCompletion(reminder)
             if reminder.isCompleted { onComplete?(reminder) }
         }
@@ -63,21 +65,22 @@ struct ReminderRowView: View {
                     .foregroundStyle(reminder.isCompleted ? Color.secondary : Color.primary)
                 metaLine
             }
-            .contentShape(Rectangle())
-            .onTapGesture { store.openInReminders(reminder) }
             Spacer()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
-        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-            Button(role: .destructive) {
-                Task { await store.deleteReminder(reminder) }
-            } label: {
-                Label("Delete", systemImage: "trash")
+        .background {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.accentColor.opacity(0.16))
             }
         }
+        .contentShape(Rectangle())
+        // Whole-row tap opens the reminder in Reminders (README/GuideView).
+        // Buttons (completion circle, tag chips) consume their own taps, so
+        // they never double-fire this gesture.
+        .onTapGesture { store.openInReminders(reminder) }
         .contextMenu {
             Button(reminder.isCompleted ? "Mark as Not Completed" : "Mark as Completed") {
                 toggleComplete()
@@ -134,32 +137,57 @@ struct ReminderRowView: View {
         .foregroundStyle(.secondary)
     }
 
-    /// Colored #tag chip; right-click to pick a color (stored in TagStore).
+    /// Colored #tag chip; click to filter the list by this tag (click the
+    /// active chip again to clear), right-click to pick a color (TagStore).
     private struct TagChip: View {
         @ObservedObject private var tagStore = TagStore.shared
+        @ObservedObject private var filterStore = FilterStore.shared
         let name: String
 
+        /// True when this chip's tag is the active list filter.
+        private var isActive: Bool {
+            filterStore.tag == name.lowercased()
+        }
+
         var body: some View {
-            Text("#\(name)")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(TagStore.textColor(on: nsColor))
+            Button {
+                filterStore.toggle(name)
+            } label: {
+                HStack(spacing: 3) {
+                    if isActive {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 8, weight: .bold))
+                    }
+                    Text("#\(name)")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(TagStore.textColor(on: nsColor))
+                }
                 .padding(.horizontal, 5)
                 .padding(.vertical, 1)
                 .background(RoundedRectangle(cornerRadius: 3).fill(color))
-                .contextMenu {
-                    ForEach(Array(TagStore.palette.enumerated()), id: \.offset) { index, nsColor in
-                        Button {
-                            tagStore.setColor(for: name, paletteIndex: index)
-                        } label: {
-                            HStack(spacing: 6) {
-                                Circle()
-                                    .fill(Color(nsColor: nsColor))
-                                    .frame(width: 10, height: 10)
-                                Text(TagStore.colorName(index))
-                            }
+                .overlay {
+                    if isActive {
+                        RoundedRectangle(cornerRadius: 3)
+                            .strokeBorder(Color.accentColor, lineWidth: 1.5)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .help(isActive ? "Showing only #\(name) — click to clear" : "Filter to #\(name)")
+            .contextMenu {
+                ForEach(Array(TagStore.palette.enumerated()), id: \.offset) { index, nsColor in
+                    Button {
+                        tagStore.setColor(for: name, paletteIndex: index)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(Color(nsColor: nsColor))
+                                .frame(width: 10, height: 10)
+                            Text(TagStore.colorName(index))
                         }
                     }
                 }
+            }
         }
 
         private var nsColor: NSColor {

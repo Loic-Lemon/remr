@@ -86,31 +86,38 @@ enum NaturalLanguageParser {
     // MARK: - Pass 1: Priority
 
     private static let priorityPhraseRegex = try! NSRegularExpression(
-        pattern: #"\b(high|p1|medium|p2|low|p3)\s+priority\b"#,
+        pattern: #"(?<![#@])\b(high|p1|medium|p2|low|p3)\s+priority\b"#,
         options: [.caseInsensitive])
+    // Bare token must be standalone: line start or whitespace before, and
+    // whitespace/line end after. This keeps "low-fat" intact ("low" is
+    // followed by "-", not a boundary) while "buy high quality milk" still
+    // strips "high". The lookbehind also keeps "@p1" from matching.
     private static let priorityBareRegex = try! NSRegularExpression(
-        pattern: #"\b(high|p1|medium|p2|low|p3)\b"#,
+        pattern: #"(?<![#@])(?:^|\s)(high|p1|medium|p2|low|p3)(?=\s|$)"#,
         options: [.caseInsensitive])
 
     private static func extractPriority(from input: String) -> (priority: Int, text: String) {
         var text = input
+        var priority = 0
+        // Leading "!!" wins over any later priority word, but does not return
+        // early: the token itself must still be stripped from the title.
         if let range = text.range(of: #"^(!{1,2})\s*"#, options: .regularExpression) {
             text.removeSubrange(range)
-            return (1, text)
+            priority = 1
         }
-        let nsText = text as NSString
-        let fullRange = NSRange(location: 0, length: nsText.length)
-        if let res = priorityPhraseRegex.firstMatch(in: text, options: [], range: fullRange) {
-            let level = nsText.substring(with: res.range(at: 1))
+        if let res = priorityPhraseRegex.firstMatch(in: text, options: [],
+                                                    range: NSRange(location: 0, length: (text as NSString).length)) {
+            let level = (text as NSString).substring(with: res.range(at: 1))
             text.removeSubrange(nsRangeToRange(res.range, in: text))
-            return (priorityForLevel(level), text)
+            if priority == 0 { priority = priorityForLevel(level) }
         }
-        if let res = priorityBareRegex.firstMatch(in: text, options: [], range: fullRange) {
-            let level = nsText.substring(with: res.range)
+        if let res = priorityBareRegex.firstMatch(in: text, options: [],
+                                                  range: NSRange(location: 0, length: (text as NSString).length)) {
+            let level = (text as NSString).substring(with: res.range(at: 1))
             text.removeSubrange(nsRangeToRange(res.range, in: text))
-            return (priorityForLevel(level), text)
+            if priority == 0 { priority = priorityForLevel(level) }
         }
-        return (0, text)
+        return (priority, text)
     }
 
     private static func priorityForLevel(_ level: String) -> Int {
@@ -123,7 +130,7 @@ enum NaturalLanguageParser {
 
     // MARK: - Pass 2: List
 
-    private static let listRegex = try! NSRegularExpression(pattern: #"@([^\s@]+)"#)
+    private static let listRegex = try! NSRegularExpression(pattern: #"(?:^|\s)@([^\s@]+)"#)
 
     private static func extractList(from input: String, listNames: [String]) -> (token: String?, matched: Bool, text: String) {
         var text = input
@@ -141,7 +148,11 @@ enum NaturalLanguageParser {
         if let nextWord = afterNS.range(of: #"^\s+\S+"#, options: .regularExpression) {
             let secondWord = String(afterNS[nextWord]).trimmingCharacters(in: .whitespaces)
             candidate2 = firstWord + " " + secondWord
-            stripEnd += afterNS.distance(from: afterNS.startIndex, to: nextWord.upperBound)
+            // stripEnd is a UTF-16 offset into nsText, but
+            // afterNS.distance(from:to:) counts Characters — the two diverge
+            // when the line contains non-BMP characters (emoji). Count UTF-16
+            // units of the prefix instead.
+            stripEnd += afterNS[afterNS.startIndex..<nextWord.upperBound].utf16.count
         }
 
         let token: String
@@ -181,8 +192,16 @@ enum NaturalLanguageParser {
         var seen = Set<String>()
         return input.split(whereSeparator: { $0.isWhitespace })
             .filter { $0.hasPrefix("#") && $0.count > 1 }
-            .map { String($0.dropFirst()) }
+            .map { String($0.dropFirst()).trimmingCharacters(in: CharacterSet(charactersIn: ",.;:!?")) }
             .filter { seen.insert($0.lowercased()).inserted }
+    }
+
+    /// True iff `input` carries the `#tag` token (exact, case-insensitive) —
+    /// the tag-filter rule. Deliberately not a substring match: the chips the
+    /// filter is set from come from `extractTags`, so filtering must agree
+    /// with what a chip represents.
+    static func containsTag(_ tag: String, in input: String) -> Bool {
+        extractTags(from: input).contains { $0.lowercased() == tag.lowercased() }
     }
 
     // MARK: - Pass 4: Date
@@ -194,33 +213,58 @@ enum NaturalLanguageParser {
     private static let inUnitsRegex = try! NSRegularExpression(
         pattern: #"\bin\s+(an?|half an?|\d+)\s+(minute|minutes|hour|hours|day|days|week|weeks)\b"#,
         options: [.caseInsensitive])
+    private static let weekQualifierRegex = try! NSRegularExpression(
+        pattern: #"\b(next|this)\s+week\b"#,
+        options: [.caseInsensitive])
     private static let hasTimeRegex = try! NSRegularExpression(
-        pattern: #"\b(\d{1,2}(:\d{2})?\s*(a\.?m\.?|p\.?m\.?)|noon|midnight|tonight|tonite|morning|afternoon|evening|o'clock|\d{1,2}:\d{2})\b"#,
+        pattern: #"\b(\d{1,2}(:\d{2})?\s*(a\.?m\.?|p\.?m\.?)|noon|midnight|tonight|tonite|night|morning|afternoon|evening|o'clock|\d{1,2}:\d{2})\b"#,
         options: [.caseInsensitive])
     private static let dateWordRegex = try! NSRegularExpression(
-        pattern: #"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow|yesterday|next|this|january|february|march|april|may|june|july|august|september|october|november|december|in\s+\d+\s+(minute|minutes|hour|hours|day|days|week|weeks))\b"#,
+        pattern: #"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow|yesterday|tonight|tonite|next|this|january|february|march|april|may|june|july|august|september|october|november|december|in\s+\d+\s+(minute|minutes|hour|hours|day|days|week|weeks))\b"#,
         options: [.caseInsensitive])
     private static let dateConnectors: Set<String> = ["at", "by", "on", "before"]
+
+    /// One date span found in the line (detector or keyword layer).
+    private struct DateMatch {
+        var range: NSRange
+        var date: Date
+        var isKeyword: Bool
+        var hasTime: Bool
+        var isEOD: Bool = false   // keyword-layer end-of-day: authoritative over detector
+        /// Bare clock time (detector match or noon/midnight keyword): may roll
+        /// to tomorrow when already past. Keyword dates computed from `now`
+        /// (eod/later, in-units, week qualifiers) never roll.
+        var rollsOverPast: Bool = false
+    }
 
     private static func extractDate(from input: String, now: Date, calendar: Calendar) -> (due: Date?, hasTime: Bool, text: String) {
         let text = input
         let nsText = text as NSString
         let fullRange = NSRange(location: 0, length: nsText.length)
 
-        var matches: [(range: NSRange, date: Date, isKeyword: Bool)] = []
+        var matches: [DateMatch] = []
         dateDetector.enumerateMatches(in: text, options: [], range: fullRange) { res, _, _ in
             guard let res, let date = res.date else { return }
-            matches.append((res.range, date, false))
+            // NSDataDetector resolves relative phrases ("tomorrow", "friday",
+            // "5pm", "in 2 days") against the wall clock, which would make
+            // `parse(line, now:)` non-deterministic under a pinned `now`.
+            // Re-resolve those phrases from `now`; absolute matches keep the
+            // detector's clock-independent result.
+            let phrase = nsText.substring(with: res.range)
+            let rebased = rebaseRelativeDate(phrase, detectorDate: date, now: now, calendar: calendar)
+            matches.append(DateMatch(range: res.range, date: rebased ?? date, isKeyword: false, hasTime: hasTimeRegex.firstMatch(in: phrase, options: [],
+                                                                                                                                      range: NSRange(location: 0, length: (phrase as NSString).length)) != nil,
+                                     rollsOverPast: true))
         }
 
         // Keyword layer fills gaps the detector misses. Fires only where no
         // detector match overlaps (e.g. "in 2 days" is detector-covered).
-        var keywordMatches: [(range: NSRange, date: Date, isEOD: Bool)] = []
+        var keywordMatches: [DateMatch] = []
         endOfDayRegex.enumerateMatches(in: text, options: [], range: fullRange) { res, _, _ in
             guard let res else { return }
             let startOfDay = calendar.startOfDay(for: now)
             if let eod = calendar.date(byAdding: .hour, value: 17, to: startOfDay) {
-                keywordMatches.append((res.range, eod, true))
+                keywordMatches.append(DateMatch(range: res.range, date: eod, isKeyword: true, hasTime: true, isEOD: true))
             }
         }
         inUnitsRegex.enumerateMatches(in: text, options: [], range: fullRange) { res, _, _ in
@@ -236,7 +280,50 @@ enum NaturalLanguageParser {
             else if unitStr.hasPrefix("hour") { unitSeconds = 3600 }
             else if unitStr.hasPrefix("day") { unitSeconds = 86400 }
             else { unitSeconds = 604_800 }  // week
-            keywordMatches.append((res.range, now.addingTimeInterval(amount * unitSeconds), false))
+            // minutes/hours → exact now + offset (timed); days/weeks → noon of
+            // the target day (all-day), mirroring the rebase path so "in a
+            // week" agrees with "in 1 week". Non-integral week/day amounts
+            // truncate via Int(amount) — pre-existing rebase behavior.
+            let isTimeUnit = unitSeconds < 86_400
+            let date: Date
+            if isTimeUnit {
+                date = now.addingTimeInterval(amount * unitSeconds)
+            } else {
+                let days = Int(amount) * (unitStr.hasPrefix("week") ? 7 : 1)
+                let start = calendar.startOfDay(for: now)
+                let target = calendar.date(byAdding: .day, value: days, to: start) ?? start
+                date = calendar.date(bySettingHour: 12, minute: 0, second: 0, of: target) ?? target
+            }
+            keywordMatches.append(DateMatch(range: res.range, date: date, isKeyword: true, hasTime: isTimeUnit))
+        }
+        weekQualifierRegex.enumerateMatches(in: text, options: [], range: fullRange) { res, _, _ in
+            guard let res else { return }
+            let phrase = nsText.substring(with: res.range).lowercased()
+            let startOfDay = calendar.startOfDay(for: now)
+            let target: Date
+            if phrase.hasPrefix("next") {
+                // "next week" → exactly 7 days from today (matches "in 1 week").
+                target = calendar.date(byAdding: .day, value: 7, to: startOfDay) ?? startOfDay
+            } else {
+                // "this week" → last day of the current week (locale-aware).
+                let weekEnd = calendar.dateInterval(of: .weekOfYear, for: now)?.end ?? startOfDay
+                target = calendar.date(byAdding: .day, value: -1, to: weekEnd) ?? startOfDay
+            }
+            let date = calendar.date(bySettingHour: 12, minute: 0, second: 0, of: target) ?? target
+            keywordMatches.append(DateMatch(range: res.range, date: date, isKeyword: true, hasTime: false))
+        }
+        // Noon/midnight fill the gap the detector misses ("call noon" while
+        // "call at noon" works). The overlap rule below drops these when the
+        // detector covered the word ("at noon" → detector wins).
+        let clockWordRegex = try! NSRegularExpression(
+            pattern: #"\b(noon|midnight)\b"#, options: [.caseInsensitive])
+        clockWordRegex.enumerateMatches(in: text, options: [], range: fullRange) { res, _, _ in
+            guard let res else { return }
+            let word = nsText.substring(with: res.range).lowercased()
+            let target = calendar.startOfDay(for: now)
+            if let d = calendar.date(bySettingHour: word == "noon" ? 12 : 0, minute: 0, second: 0, of: target) {
+                keywordMatches.append(DateMatch(range: res.range, date: d, isKeyword: true, hasTime: true, rollsOverPast: true))
+            }
         }
         // End-of-day keywords are authoritative: "later today" must mean 17:00
         // today, not the detector's guess at the phrase. Drop detector matches
@@ -248,7 +335,7 @@ enum NaturalLanguageParser {
         }
         let detectorRanges = matches.map(\.range)
         for kw in keywordMatches where !detectorRanges.contains(where: { rangesOverlap($0, kw.range) }) {
-            matches.append((kw.range, kw.date, true))
+            matches.append(kw)
         }
 
         // First match in document order = due date.
@@ -256,18 +343,38 @@ enum NaturalLanguageParser {
         var due: Date?
         var hasTime = false
         if let first = ordered.first {
-            let sub = nsText.substring(with: first.range)
+            func carriesTime(_ m: DateMatch) -> Bool { m.hasTime }
+            func carriesDateWord(_ m: DateMatch) -> Bool {
+                containsDateWord(nsText.substring(with: m.range))
+            }
             var date = first.date
-            var time: Bool
-            if first.isKeyword {
+            var sub = nsText.substring(with: first.range)
+            var time = carriesTime(first)
+            // NSDataDetector can split "friday by 5pm" into a date-only "friday"
+            // match and a bare-time "5pm" match. When exactly one match is a bare
+            // clock time (time, no date word) and another is date-only (date word,
+            // no time), merge: day from the date match, clock from the time match.
+            let bareTimeMatches = ordered.filter { carriesTime($0) && !carriesDateWord($0) }
+            let dateOnlyMatches = ordered.filter { !carriesTime($0) && carriesDateWord($0) }
+            if bareTimeMatches.count == 1, let bare = bareTimeMatches.first,
+               let dateMatch = dateOnlyMatches.first {
+                let comps = calendar.dateComponents([.hour, .minute, .second], from: bare.date)
+                let merged = calendar.date(bySettingHour: comps.hour ?? 12, minute: comps.minute ?? 0,
+                                           second: comps.second ?? 0, of: calendar.startOfDay(for: dateMatch.date))
+                date = merged ?? date
+                sub = nsText.substring(with: dateMatch.range)
                 time = true
-            } else {
-                time = hasTimeRegex.firstMatch(in: sub, options: [],
-                                               range: NSRange(location: 0, length: (sub as NSString).length)) != nil
             }
             // Past-time rollover: bare clock time already past → next day.
-            if time && !containsDateWord(sub) && date < now {
-                date = date.addingTimeInterval(86_400)
+            // Calendar-day arithmetic: adding 86_400s crosses a DST transition
+            // to the wrong wall-clock hour (03:00 → 04:00 on spring-forward).
+            // Only bare clock times roll — detector matches ("5pm") and
+            // noon/midnight keywords ("call midnight" at 12:47 → tomorrow
+            // 00:00, per the README). Keyword dates computed from `now`
+            // (eod/later = explicit today 17:00, in-units, week qualifiers)
+            // never roll, so "buy milk later" at 18:00 stays today 17:00.
+            if first.rollsOverPast && time && !containsDateWord(sub) && date < now {
+                date = calendar.date(byAdding: .day, value: 1, to: date) ?? date.addingTimeInterval(86_400)
             }
             due = date
             hasTime = time
@@ -278,10 +385,15 @@ enum NaturalLanguageParser {
         // earlier indices valid.
         var stripped = text
         for m in matches.sorted(by: { $0.range.location > $1.range.location }) {
-            let start = nsRangeToRange(m.range, in: stripped).lowerBound
-            let end = stripped.index(start, offsetBy: m.range.length)
-            let stripStart = connectorStripStart(in: stripped, rangeStart: start, connectors: dateConnectors)
-            stripped.removeSubrange(stripStart..<end)
+            let range = nsRangeToRange(m.range, in: stripped)
+            let stripStart = connectorStripStart(in: stripped, rangeStart: range.lowerBound, connectors: dateConnectors)
+            var stripEnd = range.upperBound
+            // Swallow sentence punctuation left dangling by the removal
+            // ("buy milk tomorrow," → "buy milk").
+            while stripEnd < stripped.endIndex, ",.;:!?".contains(stripped[stripEnd]) {
+                stripEnd = stripped.index(after: stripEnd)
+            }
+            stripped.removeSubrange(stripStart..<stripEnd)
         }
         return (due, hasTime, stripped)
     }
@@ -289,6 +401,102 @@ enum NaturalLanguageParser {
     private static func containsDateWord(_ s: String) -> Bool {
         dateWordRegex.firstMatch(in: s, options: [],
                                  range: NSRange(location: 0, length: (s as NSString).length)) != nil
+    }
+
+    // MARK: - Deterministic relative dates
+
+    private static let monthNameRegex = try! NSRegularExpression(
+        pattern: #"\b(january|february|march|april|may|june|july|august|september|october|november|december)\b"#,
+        options: [.caseInsensitive])
+
+    /// Calendar.weekday values (1 = Sunday … 7 = Saturday), keyed by name.
+    private static let weekdayNames: [String: Int] = [
+        "sunday": 1, "monday": 2, "tuesday": 3, "wednesday": 4,
+        "thursday": 5, "friday": 6, "saturday": 7,
+    ]
+
+    /// Re-resolve a detector match whose phrase is relative ("tomorrow",
+    /// "friday", "at 5pm", "in 2 days", "tonight") from `now`, because
+    /// NSDataDetector anchored it to the wall clock. Returns nil when the
+    /// phrase is absolute (month name or year) — the detector's result is
+    /// clock-independent there — or when the phrase isn't one we resolve.
+    /// The detector's time-of-day is preserved (date-only phrases resolve to
+    /// noon, matching NSDataDetector's convention).
+    static func rebaseRelativeDate(_ phrase: String, detectorDate: Date, now: Date, calendar: Calendar) -> Date? {
+        let s = phrase.lowercased()
+        let fullRange = NSRange(location: 0, length: (s as NSString).length)
+        // Absolute date (month/day or year): detector's result is stable.
+        if monthNameRegex.firstMatch(in: s, options: [], range: fullRange) != nil
+            || s.range(of: #"\d{4}"#, options: .regularExpression) != nil {
+            return nil
+        }
+
+        let day = calendar.startOfDay(for: now)
+
+        // "in N minutes/hours" → exact now + offset (same as the keyword
+        // layer); "in N days/weeks" → noon of now + N (detector convention).
+        // The "in N units" phrase may appear anywhere in the detector match
+        // ("at 5pm in 2 days"), not just at the start.
+        if let m = inUnitsRegex.firstMatch(in: s, options: [], range: fullRange) {
+            let amountStr = (s as NSString).substring(with: m.range(at: 1)).lowercased()
+            let unitStr = (s as NSString).substring(with: m.range(at: 2)).lowercased()
+            let amount: Double
+            if amountStr.contains("half") { amount = 0.5 }
+            else if let n = Double(amountStr) { amount = n }
+            else { amount = 1 }
+            let unitSeconds: Double
+            if unitStr.hasPrefix("minute") { unitSeconds = 60 }
+            else if unitStr.hasPrefix("hour") { unitSeconds = 3600 }
+            else if unitStr.hasPrefix("day") { unitSeconds = 86_400 }
+            else { unitSeconds = 604_800 }  // week
+            if unitSeconds < 86_400 {
+                return now.addingTimeInterval(amount * unitSeconds)
+            }
+            // Calendar-day arithmetic; weeks = 7 days. (Previously the unit was
+            // ignored: "in 2 weeks" landed 2 days out.)
+            let days = Int(amount) * (unitStr.hasPrefix("week") ? 7 : 1)
+            guard let target = calendar.date(byAdding: .day, value: days, to: day) else { return nil }
+            // Preserve the detector's time-of-day: "in 2 days at 5pm" is a
+            // timed due date at 17:00, not noon. Date-only phrases resolve to
+            // noon (NSDataDetector's convention), which the detectorDate keeps.
+            let time = calendar.dateComponents([.hour, .minute, .second], from: detectorDate)
+            return calendar.date(bySettingHour: time.hour ?? 12, minute: time.minute ?? 0,
+                                 second: time.second ?? 0, of: target)
+        }
+
+        var targetDay: Date?
+        // "day after tomorrow" contains "tomorrow", so the compound phrases
+        // must precede the bare-word branches.
+        if s.contains("day after tomorrow") {
+            targetDay = calendar.date(byAdding: .day, value: 2, to: day)
+        } else if s.contains("day before yesterday") {
+            targetDay = calendar.date(byAdding: .day, value: -2, to: day)
+        } else if s.contains("tomorrow") {
+            targetDay = calendar.date(byAdding: .day, value: 1, to: day)
+        } else if s.contains("yesterday") {
+            targetDay = calendar.date(byAdding: .day, value: -1, to: day)
+        } else if s.contains("today") {
+            targetDay = day
+        } else if let weekday = weekdayNames.first(where: { s.contains($0.key) })?.value {
+            // Next occurrence at-or-after today — NSDataDetector's rule for a
+            // bare weekday ("friday" → this week's friday). A "next" qualifier
+            // shifts the result a full week out, so "next tuesday" from a
+            // Sunday is the tuesday after the coming one (matches what the
+            // detector returns for its phrase, whose range includes "next").
+            let today = calendar.component(.weekday, from: day)
+            var delta = weekday - today
+            if delta < 0 { delta += 7 }
+            if s.contains("next") { delta += 7 }
+            targetDay = calendar.date(byAdding: .day, value: delta, to: day)
+        } else if hasTimeRegex.firstMatch(in: s, options: [], range: fullRange) != nil {
+            // Bare clock time ("at 5pm", "tonight", "noon") → now's day.
+            targetDay = day
+        }
+
+        guard let targetDay else { return nil }
+        let time = calendar.dateComponents([.hour, .minute, .second], from: detectorDate)
+        return calendar.date(bySettingHour: time.hour ?? 12, minute: time.minute ?? 0,
+                             second: time.second ?? 0, of: targetDay)
     }
 
     private static func rangesOverlap(_ a: NSRange, _ b: NSRange) -> Bool {
@@ -310,10 +518,9 @@ enum NaturalLanguageParser {
 
         if let res = addressDetector.firstMatch(in: text, options: [], range: fullRange) {
             let phrase = nsText.substring(with: res.range)
-            let start = nsRangeToRange(res.range, in: text).lowerBound
-            let end = text.index(start, offsetBy: res.range.length)
-            let stripStart = connectorStripStart(in: text, rangeStart: start, connectors: placeConnectors)
-            text.removeSubrange(stripStart..<end)
+            let range = nsRangeToRange(res.range, in: text)
+            let stripStart = connectorStripStart(in: text, rangeStart: range.lowerBound, connectors: placeConnectors)
+            text.removeSubrange(stripStart..<range.upperBound)
             return (phrase, text)
         }
 
@@ -342,10 +549,12 @@ enum NaturalLanguageParser {
         s.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
     }
 
+    /// NSRange offsets are UTF-16 code units; String.index(offsetBy:) counts
+    /// Characters (grapheme clusters). `Range(_:in:)` converts correctly even
+    /// for emoji/CJK. A nil result (a range splitting a grapheme) degrades to
+    /// an empty range, which makes every removeSubrange a safe no-op.
     private static func nsRangeToRange(_ ns: NSRange, in s: String) -> Range<String.Index> {
-        let start = s.index(s.startIndex, offsetBy: ns.location)
-        let end = s.index(start, offsetBy: ns.length)
-        return start..<end
+        Range(ns, in: s) ?? s.startIndex..<s.startIndex
     }
 
     /// If the word immediately before `rangeStart` is one of `connectors`,

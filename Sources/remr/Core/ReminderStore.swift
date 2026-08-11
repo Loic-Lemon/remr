@@ -50,12 +50,23 @@ final class ReminderStore: ObservableObject {
     /// Single shared EventKit store instance (Apple requires one per process).
     private let store = EKEventStore()
     private var refreshTimer: Timer?
+    private var eventStoreObserver: NSObjectProtocol?
+    /// Bumped on every refresh() so a stale in-flight fetch (started before a
+    /// newer refresh began) can't clobber fresher data when it lands.
+    private var fetchGeneration = 0
+
+    deinit {
+        if let eventStoreObserver {
+            NotificationCenter.default.removeObserver(eventStoreObserver)
+        }
+        refreshTimer?.invalidate()
+    }
 
     // MARK: - Lifecycle
 
     func start() {
         loadDeleted()
-        NotificationCenter.default.addObserver(forName: .EKEventStoreChanged, object: store, queue: .main) { [weak self] _ in
+        eventStoreObserver = NotificationCenter.default.addObserver(forName: .EKEventStoreChanged, object: store, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
@@ -85,11 +96,11 @@ final class ReminderStore: ObservableObject {
             }
         } else {
             switch status {
-            case .authorized:
+            case .authorized, .fullAccess:
                 accessState = .authorized
                 refresh()
                 return
-            case .denied, .restricted:
+            case .writeOnly, .denied, .restricted:
                 accessState = .denied
                 return
             case .notDetermined:
@@ -138,30 +149,52 @@ final class ReminderStore: ObservableObject {
         let startOfToday = cal.startOfDay(for: Date())
         guard let startOfTomorrow = cal.date(byAdding: .day, value: 1, to: startOfToday) else { return }
 
-        let overduePred = store.predicateForIncompleteReminders(withDueDateStarting: nil, ending: startOfToday, calendars: nil)
-        let todayPred = store.predicateForIncompleteReminders(withDueDateStarting: startOfToday, ending: startOfTomorrow, calendars: nil)
+        // EventKit's date-range predicates misfile all-day reminders: an
+        // all-day reminder due today comes back from the *overdue* range,
+        // never the today range. Bucket by due date in Swift instead, so a
+        // date-only "today" reminder lands under TODAY (like Reminders.app).
         let completedPred = store.predicateForCompletedReminders(withCompletionDateStarting: nil, ending: nil, calendars: nil)
         let allPred = store.predicateForReminders(in: nil)
 
+        fetchGeneration += 1
+        let gen = fetchGeneration
         Task { [weak self] in
             guard let self else { return }
-            if let result = await self.fetchReminders(overduePred) {
-                self.overdue = result.sorted { Self.dueAscending($0, $1, cal) }
-            }
-            if let result = await self.fetchReminders(todayPred) {
-                self.today = result.sorted { Self.dueAscending($0, $1, cal) }
-            }
-            if let result = await self.fetchReminders(completedPred) {
+            if let result = await self.fetchReminders(completedPred), gen == self.fetchGeneration {
                 self.completedReminders = result.sorted { ($0.completionDate ?? .distantPast) > ($1.completionDate ?? .distantPast) }
             }
-            if let result = await self.fetchReminders(allPred) {
+            if let result = await self.fetchReminders(allPred), gen == self.fetchGeneration {
                 self.allReminders = result.sorted { lhs, rhs in
                     if Self.dueAscending(lhs, rhs, cal) { return true }
                     if Self.dueAscending(rhs, lhs, cal) { return false }
                     return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
                 }
+                let (overdue, today) = Self.bucket(result, startOfToday: startOfToday,
+                                                   startOfTomorrow: startOfTomorrow, calendar: cal)
+                self.overdue = overdue
+                self.today = today
             }
         }
+    }
+
+    /// Split incomplete reminders by due date: `[nil, startOfToday)` →
+    /// overdue, `[startOfToday, startOfTomorrow)` → today; everything else
+    /// (including nil due) is later. Done in Swift because EventKit's
+    /// date-range predicates misfile all-day reminders — an all-day reminder
+    /// due today is returned as overdue, never today.
+    static func bucket(_ reminders: [EKReminder], startOfToday: Date, startOfTomorrow: Date, calendar: Calendar) -> (overdue: [EKReminder], today: [EKReminder]) {
+        var overdue: [EKReminder] = []
+        var today: [EKReminder] = []
+        for reminder in reminders where !reminder.isCompleted {
+            guard let due = reminder.dueDateComponents.flatMap({ calendar.date(from: $0) }) else { continue }
+            if due < startOfToday {
+                overdue.append(reminder)
+            } else if due < startOfTomorrow {
+                today.append(reminder)
+            }
+        }
+        return (overdue.sorted { Self.dueAscending($0, $1, calendar) },
+                today.sorted { Self.dueAscending($0, $1, calendar) })
     }
 
     /// nil return = fetch failed; previous array is kept, never crash.

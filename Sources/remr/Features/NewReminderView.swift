@@ -14,6 +14,9 @@ struct NewReminderView: View {
     @State private var saveError: String?
     /// Bumped to move focus from the title into the description.
     @State private var notesFocusRequest = 0
+    /// Bumped (with `focusedField`) to grab the title field from outside:
+    /// observed `titleFocusRequest` changes and Shift+Tab-back from notes.
+    @State private var titleFocusBump = 0
     /// Explicit SwiftUI focus identity — without it, macOS 26's focus system
     /// hands focus to the description the moment it appears.
     @FocusState private var focusedField: EntryField?
@@ -24,8 +27,31 @@ struct NewReminderView: View {
     @State private var titleFocused = false
     @State private var replaceTokenRequest = 0
     @State private var replaceTokenWith = ""
+    /// External bump (MainView): focus the title field (Tab from the list,
+    /// Shift+Tab from search, or popover open). Dual mechanism with
+    /// `focusedField` + `titleFocusBump` — see `moveToNotes()`.
+    var titleFocusRequest: Int = 0
+    /// External bump (MainView): focus the notes field (Shift+Tab from
+    /// search). Falls back to the title when nothing is typed yet.
+    var notesFocusRequestExternal: Int = 0
+    /// Tab past the last field (title empty) or from notes → search.
+    var onTabForward: (() -> Void)? = nil
+    /// Shift+Tab in the title → leave the fields and enter list mode.
+    var onTabBackFromTitle: (() -> Void)? = nil
+    /// Escape while a text field owns it (dropdown already dismissed).
+    var onEscape: (() -> Void)? = nil
 
-    init(prefillText: String = "") {
+    init(prefillText: String = "",
+         titleFocusRequest: Int = 0,
+         notesFocusRequestExternal: Int = 0,
+         onTabForward: (() -> Void)? = nil,
+         onTabBackFromTitle: (() -> Void)? = nil,
+         onEscape: (() -> Void)? = nil) {
+        self.titleFocusRequest = titleFocusRequest
+        self.notesFocusRequestExternal = notesFocusRequestExternal
+        self.onTabForward = onTabForward
+        self.onTabBackFromTitle = onTabBackFromTitle
+        self.onEscape = onEscape
         // Service / global-input prefill: first line is the title, the
         // remaining lines become the description.
         let lines = prefillText.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
@@ -59,6 +85,22 @@ struct NewReminderView: View {
             // full-width hairline separating it from the search row below.
             Divider()
         }
+        .onChange(of: titleFocusRequest) { _ in
+            focusedField = .title
+            titleFocusBump += 1
+        }
+        .onChange(of: notesFocusRequestExternal) { _ in
+            if title.isEmpty && notes.isEmpty {
+                focusedField = .title
+                titleFocusBump += 1
+            } else {
+                focusedField = .notes
+                notesFocusRequest += 1
+            }
+        }
+        .onAppear {
+            focusedField = .title
+        }
         .preferredColorScheme(.light)
     }
 
@@ -66,11 +108,22 @@ struct NewReminderView: View {
         ZStack(alignment: .topLeading) {
             ReminderInputView(
                 text: $title, refocusOnClear: true, onMoveDown: titleReturnPressed,
+                focusRequest: titleFocusBump,
                 onTokenChange: { completionToken = $0; selectedSuggestion = 0 },
                 onFocusChange: { titleFocused = $0 },
                 dropdownActive: titleFocused && !suggestionMatches.isEmpty,
                 onNavigate: navigateSuggestion,
                 onDismiss: { completionToken = "" },
+                onFocusForward: {
+                    if title.isEmpty && notes.isEmpty {
+                        onTabForward?()
+                    } else {
+                        focusedField = .notes
+                        notesFocusRequest += 1
+                    }
+                },
+                onFocusBack: { onTabBackFromTitle?() },
+                onEscape: onEscape,
                 replaceTokenRequest: replaceTokenRequest,
                 replaceTokenWith: replaceTokenWith
             )
@@ -124,7 +177,10 @@ struct NewReminderView: View {
     private var notesField: some View {
         ZStack(alignment: .topLeading) {
             ReminderInputView(text: $notes, onSubmit: submit, focusRequest: notesFocusRequest,
-                              onAppearInWindow: { focusedField = .title })
+                              onAppearInWindow: { focusedField = .title },
+                              onFocusForward: { onTabForward?() },
+                              onFocusBack: { focusedField = .title; titleFocusBump += 1 },
+                              onEscape: onEscape)
             if notes.isEmpty {
                 Text("Add description…")
                     .font(.body)
@@ -153,9 +209,11 @@ struct NewReminderView: View {
     }
 
     /// Keyword completions: date keywords + priority levels the parser knows.
+    /// ("next week" / "this week" are excluded: neither the parser nor
+    /// NSDataDetector produces a due date for them, so accepting the
+    /// suggestion would silently do nothing.)
     private static let keywords = [
         "today", "tomorrow", "tonight", "later", "end of day", "eod",
-        "next week", "this week",
         "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
         "high", "medium", "low",
     ]
@@ -194,6 +252,9 @@ struct NewReminderView: View {
 
     /// Same semantics as pressing Return in the description: create the single
     /// reminder (or report what's wrong), clear both fields, keep focus.
+    /// Title/notes are snapshotted before the async save so text typed while
+    /// the save is in flight survives (the clear is conditional on the fields
+    /// still holding the submitted text).
     private func submit() {
         guard !saving else { return }
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -203,24 +264,30 @@ struct NewReminderView: View {
             saveError = "No title left after parsing"
             return
         }
-        Task { await save(parsed) }
+        let titleAtSubmit = trimmed
+        let notesAtSubmit = notes
+        saving = true
+        Task { @MainActor in await save(parsed, titleAtSubmit: titleAtSubmit, notesAtSubmit: notesAtSubmit) }
     }
 
-    private func save(_ parsed: ParsedReminder) async {
-        saving = true
+    /// `save` touches @State (saving, title, notes, saveError, focusedField);
+    /// pin it to the main actor explicitly so the mutations never run on a
+    /// background executor on SDKs where View isn't MainActor-isolated yet.
+    @MainActor
+    private func save(_ parsed: ParsedReminder, titleAtSubmit: String, notesAtSubmit: String) async {
         defer { saving = false }
         do {
-            try await createReminder(from: parsed)
-            saveError = nil
-            title = ""
-            notes = ""
+            let locationMessage = try await createReminder(from: parsed, notes: notesAtSubmit)
+            saveError = locationMessage
+            if title == titleAtSubmit { title = "" }
+            if notes == notesAtSubmit { notes = "" }
             focusedField = .title
         } catch {
             saveError = error.localizedDescription
         }
     }
 
-    private func createReminder(from parsed: ParsedReminder) async throws {
+    private func createReminder(from parsed: ParsedReminder, notes notesAtSubmit: String) async throws -> String? {
         var title = parsed.title
         if !parsed.listMatched, let token = parsed.listToken {
             title = "@\(token) " + title
@@ -237,17 +304,19 @@ struct NewReminderView: View {
             dueComponents = comps
         }
         var location: EKStructuredLocation?
+        var saveMessage: String?
         if let phrase = parsed.locationPhrase {
             if let loc = await LocationGeocoder.shared.geocode(phrase) {
                 location = Self.structuredLocation(title: phrase, location: loc)
             } else {
                 title += " at \(phrase)"
+                saveMessage = "Couldn't find location \"\(phrase)\" — added it to the title"
             }
         }
         let list = store.resolveList(token: parsed.listToken ?? "")
         // Tags persist as a trailing #-line in notes: public-API compatible,
         // visible in Reminders.app, and matched by the existing #tag search.
-        var fullNotes = notes
+        var fullNotes = notesAtSubmit
         if !parsed.tags.isEmpty {
             let tagLine = parsed.tags.map { "#\($0)" }.joined(separator: " ")
             fullNotes = [fullNotes, tagLine].filter { !$0.isEmpty }.joined(separator: "\n")
@@ -255,6 +324,7 @@ struct NewReminderView: View {
         try await store.create(title: title, calendar: list.calendar,
                                dueDate: dueComponents, priority: parsed.priority,
                                location: location, notes: fullNotes.isEmpty ? nil : fullNotes)
+        return saveMessage
     }
 
     /// This SDK exposes only `locationWithTitle:` plus settable properties.

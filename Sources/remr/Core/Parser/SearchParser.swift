@@ -45,7 +45,7 @@ enum SearchParser {
         }
         if query.priorityHigh && priority != 1 { return false }
         let text = (title + " " + (notes ?? "")).lowercased()
-        for tag in query.tags where !text.contains(tag) { return false }
+        for tag in query.tags where !NaturalLanguageParser.containsTag(tag, in: title + " " + (notes ?? "")) { return false }
         for word in query.words where !text.contains(word) { return false }
         return true
     }

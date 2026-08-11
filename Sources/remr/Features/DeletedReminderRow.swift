@@ -4,6 +4,8 @@ import SwiftUI
 struct DeletedReminderRow: View {
     @EnvironmentObject var store: ReminderStore
     let deleted: DeletedReminder
+    /// Keyboard-selection highlight (accent fill, same as the suggestion dropdown).
+    var isSelected: Bool = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -33,6 +35,12 @@ struct DeletedReminderRow: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.accentColor.opacity(0.16))
+            }
+        }
         .contentShape(Rectangle())
     }
 
