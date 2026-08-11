@@ -4,13 +4,21 @@ import Foundation
 
 enum ReminderStoreError: LocalizedError {
     case noCalendar
+    case unresolvedLocation(String)
+    case reminderNotFound
+    case tagRemovalWouldEmptyTitle(String)
 
     var errorDescription: String? {
         switch self {
         case .noCalendar: return "No Reminders list available"
+        case .unresolvedLocation(let phrase): return "Location “\(phrase)” has not been resolved"
+        case .reminderNotFound: return "Reminder no longer exists"
+        case .tagRemovalWouldEmptyTitle(let tag):
+            return "Can't remove #\(tag) because it is the reminder's only title"
         }
     }
 }
+
 
 /// Shadow copy of a deleted reminder, persisted to Application Support.
 struct DeletedReminder: Codable, Identifiable, Equatable {
@@ -23,6 +31,52 @@ struct DeletedReminder: Codable, Identifiable, Equatable {
     var calendarIdentifier: String?
     var location: DeletedLocation?
     var deletedAt: Date
+    var isCompleted: Bool = false
+    var completionDate: Date? = nil
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, notes, dueDate, isAllDay, priority, calendarIdentifier
+        case location, deletedAt, isCompleted, completionDate
+    }
+
+    init(id: UUID,
+         title: String,
+         notes: String?,
+         dueDate: Date?,
+         isAllDay: Bool,
+         priority: Int,
+         calendarIdentifier: String?,
+         location: DeletedLocation?,
+         deletedAt: Date,
+         isCompleted: Bool = false,
+         completionDate: Date? = nil) {
+        self.id = id
+        self.title = title
+        self.notes = notes
+        self.dueDate = dueDate
+        self.isAllDay = isAllDay
+        self.priority = priority
+        self.calendarIdentifier = calendarIdentifier
+        self.location = location
+        self.deletedAt = deletedAt
+        self.isCompleted = isCompleted
+        self.completionDate = completionDate
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        title = try values.decode(String.self, forKey: .title)
+        notes = try values.decodeIfPresent(String.self, forKey: .notes)
+        dueDate = try values.decodeIfPresent(Date.self, forKey: .dueDate)
+        isAllDay = try values.decode(Bool.self, forKey: .isAllDay)
+        priority = try values.decode(Int.self, forKey: .priority)
+        calendarIdentifier = try values.decodeIfPresent(String.self, forKey: .calendarIdentifier)
+        location = try values.decodeIfPresent(DeletedLocation.self, forKey: .location)
+        deletedAt = try values.decode(Date.self, forKey: .deletedAt)
+        isCompleted = try values.decodeIfPresent(Bool.self, forKey: .isCompleted) ?? false
+        completionDate = try values.decodeIfPresent(Date.self, forKey: .completionDate)
+    }
 }
 
 struct DeletedLocation: Codable, Equatable {
@@ -37,8 +91,6 @@ final class ReminderStore: ObservableObject {
     enum AccessState { case notDetermined, authorized, denied }
 
     @Published private(set) var accessState: AccessState = .notDetermined
-    @Published private(set) var overdue: [EKReminder] = []
-    @Published private(set) var today: [EKReminder] = []
     /// All completed reminders, newest completion first (tab shows top 5).
     @Published private(set) var completedReminders: [EKReminder] = []
     @Published private(set) var allReminders: [EKReminder] = []   // search corpus
@@ -46,6 +98,9 @@ final class ReminderStore: ObservableObject {
     /// EventKit has no trash — `store.remove` is permanent — so remr snapshots
     /// deletions here to power the "Recently Deleted" tab.
     @Published private(set) var recentlyDeleted: [DeletedReminder] = []
+    /// Time of the most recent completed EventKit refresh.
+    @Published private(set) var lastSyncDate: Date?
+
 
     /// Single shared EventKit store instance (Apple requires one per process).
     private let store = EKEventStore()
@@ -145,14 +200,9 @@ final class ReminderStore: ObservableObject {
     // MARK: - Fetching
 
     func refresh() {
-        let cal = Calendar.current
-        let startOfToday = cal.startOfDay(for: Date())
-        guard let startOfTomorrow = cal.date(byAdding: .day, value: 1, to: startOfToday) else { return }
-
-        // EventKit's date-range predicates misfile all-day reminders: an
-        // all-day reminder due today comes back from the *overdue* range,
-        // never the today range. Bucket by due date in Swift instead, so a
-        // date-only "today" reminder lands under TODAY (like Reminders.app).
+        // EventKit's date-range predicates misfile all-day reminders, so the
+        // chronological sections are bucketed in Swift from `allReminders`
+        // (ReminderSection in ReminderSections.swift), never from predicates.
         let completedPred = store.predicateForCompletedReminders(withCompletionDateStarting: nil, ending: nil, calendars: nil)
         let allPred = store.predicateForReminders(in: nil)
 
@@ -160,41 +210,23 @@ final class ReminderStore: ObservableObject {
         let gen = fetchGeneration
         Task { [weak self] in
             guard let self else { return }
-            if let result = await self.fetchReminders(completedPred), gen == self.fetchGeneration {
-                self.completedReminders = result.sorted { ($0.completionDate ?? .distantPast) > ($1.completionDate ?? .distantPast) }
+            let completedResult = await self.fetchReminders(completedPred)
+            guard gen == self.fetchGeneration else { return }
+            if let completedResult {
+                self.completedReminders = completedResult.sorted { ($0.completionDate ?? .distantPast) > ($1.completionDate ?? .distantPast) }
             }
-            if let result = await self.fetchReminders(allPred), gen == self.fetchGeneration {
-                self.allReminders = result.sorted { lhs, rhs in
-                    if Self.dueAscending(lhs, rhs, cal) { return true }
-                    if Self.dueAscending(rhs, lhs, cal) { return false }
+
+            let allResult = await self.fetchReminders(allPred)
+            guard gen == self.fetchGeneration else { return }
+            if let allResult {
+                self.allReminders = allResult.sorted { lhs, rhs in
+                    if Self.dueAscending(lhs, rhs, Calendar.current) { return true }
+                    if Self.dueAscending(rhs, lhs, Calendar.current) { return false }
                     return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
                 }
-                let (overdue, today) = Self.bucket(result, startOfToday: startOfToday,
-                                                   startOfTomorrow: startOfTomorrow, calendar: cal)
-                self.overdue = overdue
-                self.today = today
             }
+            self.lastSyncDate = Date()
         }
-    }
-
-    /// Split incomplete reminders by due date: `[nil, startOfToday)` →
-    /// overdue, `[startOfToday, startOfTomorrow)` → today; everything else
-    /// (including nil due) is later. Done in Swift because EventKit's
-    /// date-range predicates misfile all-day reminders — an all-day reminder
-    /// due today is returned as overdue, never today.
-    static func bucket(_ reminders: [EKReminder], startOfToday: Date, startOfTomorrow: Date, calendar: Calendar) -> (overdue: [EKReminder], today: [EKReminder]) {
-        var overdue: [EKReminder] = []
-        var today: [EKReminder] = []
-        for reminder in reminders where !reminder.isCompleted {
-            guard let due = reminder.dueDateComponents.flatMap({ calendar.date(from: $0) }) else { continue }
-            if due < startOfToday {
-                overdue.append(reminder)
-            } else if due < startOfTomorrow {
-                today.append(reminder)
-            }
-        }
-        return (overdue.sorted { Self.dueAscending($0, $1, calendar) },
-                today.sorted { Self.dueAscending($0, $1, calendar) })
     }
 
     /// nil return = fetch failed; previous array is kept, never crash.
@@ -219,20 +251,36 @@ final class ReminderStore: ObservableObject {
         }
     }
 
+    static func dateComponents(for date: Date?,
+                               hasTime: Bool,
+                               calendar: Calendar = .current) -> DateComponents? {
+        guard let date else { return nil }
+        var components = calendar.dateComponents([.year, .month, .day], from: date)
+        if hasTime {
+            let time = calendar.dateComponents([.hour, .minute, .second], from: date)
+            components.hour = time.hour
+            components.minute = time.minute
+            components.second = time.second
+        }
+        return components
+    }
+
+    func reminder(withIdentifier identifier: String) -> EKReminder? {
+        store.calendarItem(withIdentifier: identifier) as? EKReminder
+    }
+
     // MARK: - Mutations
 
-    func deleteReminder(_ reminder: EKReminder) async {
+    func deleteReminder(_ reminder: EKReminder) async throws -> DeletedReminder? {
+        // EventKit fields must be read while the item still exists.
         let snapshot = snapshotForDeletion(reminder)
-        do {
-            try store.remove(reminder, commit: true)
-            if let snapshot {
-                recentlyDeleted.insert(snapshot, at: 0)
-                persistDeleted()
-            }
-            refresh()
-        } catch {
-            NSLog("remr: failed to delete: \(error)")
+        try store.remove(reminder, commit: true)
+        if let snapshot {
+            recentlyDeleted.insert(snapshot, at: 0)
+            persistDeleted()
         }
+        refresh()
+        return snapshot
     }
 
     /// Snapshot a reminder before permanent removal (taken while it still
@@ -257,40 +305,23 @@ final class ReminderStore: ObservableObject {
             priority: reminder.priority,
             calendarIdentifier: reminder.calendar?.calendarIdentifier,
             location: location,
-            deletedAt: Date()
+            deletedAt: Date(),
+            isCompleted: reminder.isCompleted,
+            completionDate: reminder.completionDate
         )
     }
 
-    /// Re-create a deleted reminder from its snapshot (best effort: the list
-    /// may be gone, in which case it falls back to the default list).
-    func restore(_ deleted: DeletedReminder) async {
-        var location: EKStructuredLocation?
-        if let loc = deleted.location {
-            let structured = EKStructuredLocation()
-            structured.title = loc.title
-            structured.geoLocation = CLLocation(latitude: loc.latitude, longitude: loc.longitude)
-            structured.radius = loc.radius
-            location = structured
-        }
-        var dueComponents: DateComponents?
-        if let due = deleted.dueDate {
-            var comps = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .second], from: due)
-            if deleted.isAllDay {
-                comps.hour = nil
-                comps.minute = nil
-                comps.second = nil
-            }
-            dueComponents = comps
-        }
-        let calendar = deleted.calendarIdentifier.flatMap { store.calendar(withIdentifier: $0) }
-        do {
-            try await create(title: deleted.title, calendar: calendar, dueDate: dueComponents,
-                             priority: deleted.priority, location: location, notes: deleted.notes)
-            recentlyDeleted.removeAll { $0.id == deleted.id }
-            persistDeleted()
-        } catch {
-            NSLog("remr: failed to restore '\(deleted.title)': \(error)")
-        }
+    /// Re-create a deleted reminder from its snapshot. The snapshot is kept
+    /// until both creation and completion-state restoration have succeeded.
+    func restore(_ deleted: DeletedReminder) async throws {
+        let draft = ReminderDraft.fromDeleted(deleted)
+        let recreated = try await create(from: draft)
+        recreated.isCompleted = deleted.isCompleted
+        recreated.completionDate = deleted.isCompleted ? deleted.completionDate : nil
+        try store.save(recreated, commit: true)
+        refresh()
+        recentlyDeleted.removeAll { $0.id == deleted.id }
+        persistDeleted()
     }
 
     func deleteForever(_ deleted: DeletedReminder) {
@@ -321,19 +352,212 @@ final class ReminderStore: ObservableObject {
         try? data.write(to: deletedFileURL, options: .atomic)
     }
 
-    func toggleCompletion(_ reminder: EKReminder) async {
-        reminder.isCompleted.toggle()
-        if !reminder.isCompleted { reminder.completionDate = nil }
+    func toggleCompletion(_ reminder: EKReminder) async throws -> (wasCompleted: Bool, isCompleted: Bool) {
+        guard let latest = self.reminder(withIdentifier: reminder.calendarItemIdentifier) else {
+            throw ReminderStoreError.reminderNotFound
+        }
+        let wasCompleted = latest.isCompleted
+        let originalCompletionDate = latest.completionDate
+        latest.isCompleted.toggle()
+        if !latest.isCompleted {
+            latest.completionDate = nil
+        }
+        do {
+            try store.save(latest, commit: true)
+            refresh()
+            return (wasCompleted: wasCompleted, isCompleted: latest.isCompleted)
+        } catch {
+            latest.isCompleted = wasCompleted
+            latest.completionDate = originalCompletionDate
+            throw error
+        }
+    }
+    @MainActor
+    func setOngoing(_ reminder: EKReminder, enabled: Bool) async {
+        let isOngoing = NaturalLanguageParser.isOngoing(title: reminder.title, notes: reminder.notes)
+        guard isOngoing != enabled else { return }
+
+        let originalTitle = reminder.title
+        let originalNotes = reminder.notes
+
+        if enabled {
+            let tagLine = "#\(NaturalLanguageParser.ongoingTag)"
+            reminder.notes = [reminder.notes ?? "", tagLine]
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n")
+        } else {
+            let cleanedTitle = NaturalLanguageParser.removingTag(
+                NaturalLanguageParser.ongoingTag,
+                from: reminder.title ?? ""
+            )
+            guard !cleanedTitle.isEmpty else { return }
+            reminder.title = cleanedTitle
+
+            let cleanedNotes = NaturalLanguageParser.removingTag(
+                NaturalLanguageParser.ongoingTag,
+                from: reminder.notes ?? ""
+            )
+            reminder.notes = cleanedNotes.isEmpty ? nil : cleanedNotes
+        }
+
         do {
             try store.save(reminder, commit: true)
             refresh()
         } catch {
-            NSLog("remr: failed to save completion toggle: \(error)")
+            reminder.title = originalTitle
+            reminder.notes = originalNotes
+            NSLog("remr: failed to save ongoing toggle: \(error)")
         }
     }
 
+
     @discardableResult
-    func create(title: String, calendar: EKCalendar?, dueDate: DateComponents?, priority: Int, location: EKStructuredLocation?, notes: String? = nil) async throws -> EKReminder {
+    func create(from draft: ReminderDraft) async throws -> EKReminder {
+        let calendar = draft.calendarIdentifier.flatMap { store.calendar(withIdentifier: $0) }
+        let location: EKStructuredLocation?
+        switch draft.location {
+        case .none:
+            location = nil
+        case .unresolved(let phrase):
+            throw ReminderStoreError.unresolvedLocation(phrase)
+        case .resolved(let deletedLocation):
+            location = Self.structuredLocation(from: deletedLocation)
+        }
+        return try await create(title: draft.title,
+                                calendar: calendar,
+                                dueDate: Self.dateComponents(for: draft.dueDate, hasTime: draft.hasTime),
+                                priority: draft.priority,
+                                location: location,
+                                notes: draft.persistedNotes)
+    }
+
+    func update(_ reminder: EKReminder, from draft: ReminderDraft) async throws {
+        guard let latest = self.reminder(withIdentifier: reminder.calendarItemIdentifier) else {
+            throw ReminderStoreError.reminderNotFound
+        }
+
+        let replacementLocation: EKStructuredLocation?
+        switch draft.location {
+        case .none:
+            replacementLocation = nil
+        case .unresolved(let phrase):
+            throw ReminderStoreError.unresolvedLocation(phrase)
+        case .resolved(let deletedLocation):
+            replacementLocation = Self.structuredLocation(from: deletedLocation)
+        }
+
+        let calendar = draft.calendarIdentifier.flatMap { store.calendar(withIdentifier: $0) }
+            ?? latest.calendar
+            ?? store.defaultCalendarForNewReminders()
+            ?? reminderCalendars().first
+        guard let calendar else { throw ReminderStoreError.noCalendar }
+
+        let originalTitle = latest.title
+        let originalNotes = latest.notes
+        let originalDueDate = latest.dueDateComponents
+        let originalPriority = latest.priority
+        let originalCalendar = latest.calendar
+        let originalLocationAlarms = (latest.alarms ?? []).filter { $0.structuredLocation != nil }
+
+        latest.calendar = calendar
+        latest.title = draft.title
+        latest.notes = draft.persistedNotes
+        latest.dueDateComponents = Self.dateComponents(for: draft.dueDate, hasTime: draft.hasTime)
+        latest.priority = draft.priority
+        for alarm in originalLocationAlarms {
+            latest.removeAlarm(alarm)
+        }
+        if let replacementLocation {
+            let alarm = EKAlarm(relativeOffset: 0)
+            alarm.structuredLocation = replacementLocation
+            alarm.proximity = .enter
+            latest.addAlarm(alarm)
+        }
+
+        do {
+            try store.save(latest, commit: true)
+            refresh()
+        } catch {
+            latest.title = originalTitle
+            latest.notes = originalNotes
+            latest.dueDateComponents = originalDueDate
+            latest.priority = originalPriority
+            latest.calendar = originalCalendar
+            for alarm in (latest.alarms ?? []).filter({ $0.structuredLocation != nil }) {
+                latest.removeAlarm(alarm)
+            }
+            for alarm in originalLocationAlarms {
+                latest.addAlarm(alarm)
+            }
+            throw error
+        }
+    }
+
+    func snooze(_ reminder: EKReminder, until date: Date?, hasTime: Bool) async throws {
+        guard let latest = self.reminder(withIdentifier: reminder.calendarItemIdentifier) else {
+            throw ReminderStoreError.reminderNotFound
+        }
+        let originalDueDate = latest.dueDateComponents
+        latest.dueDateComponents = Self.dateComponents(for: date, hasTime: hasTime)
+        do {
+            try store.save(latest, commit: true)
+            refresh()
+        } catch {
+            latest.dueDateComponents = originalDueDate
+            throw error
+        }
+    }
+    /// Create an incomplete copy with the same fields, tags, location, due
+    /// date, priority, and list as the source reminder.
+    @discardableResult
+    func duplicate(_ reminder: EKReminder) async throws -> EKReminder {
+        guard let latest = self.reminder(withIdentifier: reminder.calendarItemIdentifier) else {
+            throw ReminderStoreError.reminderNotFound
+        }
+        var draft = ReminderDraft.fromReminder(latest)
+        let title = draft.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        draft.title = title.isEmpty ? "Reminder copy" : "Copy of \(title)"
+        return try await create(from: draft)
+    }
+
+    /// Move a reminder to a selected list, or to EventKit's default list when
+    /// the identifier is nil.
+    func moveToList(_ reminder: EKReminder, calendarIdentifier: String?) async throws {
+        guard let latest = self.reminder(withIdentifier: reminder.calendarItemIdentifier) else {
+            throw ReminderStoreError.reminderNotFound
+        }
+        let calendar = calendarIdentifier.flatMap { store.calendar(withIdentifier: $0) }
+            ?? store.defaultCalendarForNewReminders()
+            ?? reminderCalendars().first
+        guard let calendar else { throw ReminderStoreError.noCalendar }
+
+        let original = latest.calendar
+        latest.calendar = calendar
+        do {
+            try store.save(latest, commit: true)
+            refresh()
+        } catch {
+            latest.calendar = original
+            throw error
+        }
+    }
+
+
+    private static func structuredLocation(from location: DeletedLocation) -> EKStructuredLocation {
+        let structured = EKStructuredLocation()
+        structured.title = location.title
+        structured.geoLocation = CLLocation(latitude: location.latitude, longitude: location.longitude)
+        structured.radius = location.radius
+        return structured
+    }
+
+    @discardableResult
+    private func create(title: String,
+                        calendar: EKCalendar?,
+                        dueDate: DateComponents?,
+                        priority: Int,
+                        location: EKStructuredLocation?,
+                        notes: String? = nil) async throws -> EKReminder {
         let reminder = EKReminder(eventStore: store)
         if let calendar {
             reminder.calendar = calendar
@@ -357,6 +581,81 @@ final class ReminderStore: ObservableObject {
         try store.save(reminder, commit: true)
         refresh()
         return reminder
+    }
+
+    func allTags() -> [String] {
+        let tags = (allReminders + completedReminders).flatMap { reminder in
+            NaturalLanguageParser.extractTags(from: [reminder.title ?? "", reminder.notes ?? ""].joined(separator: " "))
+        }
+        return Array(Set(tags.map { $0.lowercased() })).sorted()
+    }
+    /// Rename a tag in every reminder managed by remr, preserving all other
+    /// EventKit fields and rolling back already-saved items if a later save
+    /// fails.
+    func renameTag(_ tag: String, to replacement: String) throws {
+        let old = tag.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let new = replacement.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !old.isEmpty, !new.isEmpty, !new.contains(where: { $0.isWhitespace }), old != new else { return }
+
+        let changes = managedReminders.compactMap { reminder -> (reminder: EKReminder, title: String, notes: String?)? in
+            guard let latest = self.reminder(withIdentifier: reminder.calendarItemIdentifier) else { return nil }
+            let title = NaturalLanguageParser.replacingTag(old, with: new, in: latest.title ?? "")
+            let notesText = NaturalLanguageParser.replacingTag(old, with: new, in: latest.notes ?? "")
+            let notes = notesText.isEmpty ? nil : notesText
+            guard title != latest.title || notes != latest.notes else { return nil }
+            return (latest, title, notes)
+        }
+        try saveTagChanges(changes)
+    }
+
+    /// Remove a tag from every reminder. A title-only tag is rejected rather
+    /// than turning a valid reminder into an empty EventKit title.
+    func removeTag(_ tag: String) throws {
+        let normalized = tag.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return }
+
+        let changes = managedReminders.compactMap { reminder -> (reminder: EKReminder, title: String, notes: String?)? in
+            guard let latest = self.reminder(withIdentifier: reminder.calendarItemIdentifier) else { return nil }
+            let title = NaturalLanguageParser.removingTag(normalized, from: latest.title ?? "")
+            let notesText = NaturalLanguageParser.removingTag(normalized, from: latest.notes ?? "")
+            let notes = notesText.isEmpty ? nil : notesText
+            if title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return (latest, "", notes)
+            }
+            guard title != latest.title || notes != latest.notes else { return nil }
+            return (latest, title, notes)
+        }
+        if changes.contains(where: { $0.title.isEmpty }) {
+            throw ReminderStoreError.tagRemovalWouldEmptyTitle(normalized)
+        }
+        try saveTagChanges(changes)
+    }
+
+    /// All current and completed EventKit reminders, deduplicated by ID.
+    private var managedReminders: [EKReminder] {
+        var seen = Set<String>()
+        return (allReminders + completedReminders).filter { seen.insert($0.calendarItemIdentifier).inserted }
+    }
+
+    private func saveTagChanges(_ changes: [(reminder: EKReminder, title: String, notes: String?)]) throws {
+        guard !changes.isEmpty else { return }
+        var originals: [(reminder: EKReminder, title: String?, notes: String?)] = []
+        do {
+            for change in changes {
+                originals.append((change.reminder, change.reminder.title, change.reminder.notes))
+                change.reminder.title = change.title
+                change.reminder.notes = change.notes
+                try store.save(change.reminder, commit: true)
+            }
+        } catch {
+            for original in originals {
+                original.reminder.title = original.title
+                original.reminder.notes = original.notes
+                try? store.save(original.reminder, commit: true)
+            }
+            throw error
+        }
+        refresh()
     }
 
     // MARK: - Lists

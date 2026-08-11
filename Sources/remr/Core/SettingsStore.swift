@@ -1,5 +1,40 @@
+import AppKit
 import Combine
 import Foundation
+import SwiftUI
+
+/// User-selectable appearance modes for the app's SwiftUI surfaces.
+/// The system option leaves the platform appearance unchanged.
+enum AppearanceMode: String, CaseIterable, Identifiable {
+    case system
+    case light
+    case dark
+
+    var id: Self { self }
+
+    var label: String {
+        switch self {
+        case .system: return "Follow System"
+        case .light: return "Light"
+        case .dark: return "Dark"
+        }
+    }
+
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+    var nsAppearance: NSAppearance? {
+        switch self {
+        case .system: return nil
+        case .light: return NSAppearance(named: .aqua)
+        case .dark: return NSAppearance(named: .darkAqua)
+        }
+    }
+}
 
 /// Persisted, live-applied keyboard bindings. Defaults come from
 /// `DefaultBindings.all`; user overrides are stored as JSON in UserDefaults
@@ -11,6 +46,10 @@ final class SettingsStore: ObservableObject {
     static let shared = SettingsStore()
 
     @Published private(set) var bindings: [BindableAction: KeyCombo]
+    /// The app appearance, applied immediately and persisted independently of
+    /// keyboard binding drafts.
+    @Published private(set) var appearance: AppearanceMode
+
     /// Shown under the Keyboard section; set by assign() or by AppDelegate on
     /// hotkey registration failure.
     @Published var errorMessage: String?
@@ -23,11 +62,19 @@ final class SettingsStore: ObservableObject {
 
     private let defaults: UserDefaults
     private let bindingsKey = "remr.keyBindings"
+    private let appearanceKey = "remr.appearance"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         bindings = Self.load(defaults: defaults, bindingsKey: bindingsKey)
+        appearance = AppearanceMode(rawValue: defaults.string(forKey: appearanceKey) ?? "") ?? .system
         errorMessage = nil
+    }
+
+    func setAppearance(_ appearance: AppearanceMode) {
+        guard self.appearance != appearance else { return }
+        self.appearance = appearance
+        defaults.set(appearance.rawValue, forKey: appearanceKey)
     }
 
     private static func load(defaults: UserDefaults, bindingsKey: String) -> [BindableAction: KeyCombo] {
@@ -76,7 +123,7 @@ final class SettingsStore: ObservableObject {
         }
         guard !containsTab else { return "Tab is reserved for focus navigation" }
 
-        if action == .togglePopover && combo.globalHotkeyKeyCode == nil {
+        if action.isGlobalHotkey && combo.globalHotkeyKeyCode == nil {
             return "The global shortcut needs exactly one key (e.g. ⌥⌘R)"
         }
         return nil

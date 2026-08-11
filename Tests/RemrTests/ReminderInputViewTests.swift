@@ -122,4 +122,67 @@ final class ReminderInputViewTests: XCTestCase {
         XCTAssertTrue(escaped)
         XCTAssertFalse(dismissed)
     }
+
+    func testListCompletionContextScansMultiwordQuery() {
+        let textView = EnterSubmitTextView()
+        textView.string = "buy @the o"
+        textView.setSelectedRange(NSRange(location: textView.string.utf16.count, length: 0))
+
+        XCTAssertEqual(textView.currentCompletionContext(), CompletionContext(
+            text: "@the o", range: NSRange(location: 4, length: 6)))
+    }
+
+    func testCompletionRangeUsesUTF16Offsets() {
+        let textView = EnterSubmitTextView()
+        textView.string = "📝 @the o"
+        textView.setSelectedRange(NSRange(location: textView.string.utf16.count, length: 0))
+
+        XCTAssertEqual(textView.currentCompletionContext(), CompletionContext(
+            text: "@the o", range: NSRange(location: 3, length: 6)))
+    }
+
+    func testCompletedMultiwordListLeavesTrailingSpaceOutsideRange() {
+        let textView = EnterSubmitTextView()
+        textView.string = "@home depot "
+        textView.setSelectedRange(NSRange(location: textView.string.utf16.count, length: 0))
+        let context = textView.currentCompletionContext()
+
+        XCTAssertEqual(context.text, "@home depot")
+        XCTAssertEqual(context.range, NSRange(location: 0, length: 11))
+        textView.replaceCurrentCompletion(with: "@Home Depot", in: context.range)
+
+        XCTAssertEqual(textView.string, "@Home Depot ")
+        XCTAssertEqual(textView.selectedRange(), NSRange(location: 11, length: 0))
+    }
+
+    func testCompletionReplacementUsesCapturedRangeWhenCaretIsInMiddle() {
+        let textView = EnterSubmitTextView()
+        textView.string = "before @the office"
+        textView.setSelectedRange(NSRange(location: 11, length: 0))
+        let context = textView.currentCompletionContext()
+
+        XCTAssertEqual(context.text, "@the")
+        textView.replaceCurrentCompletion(with: "@The Office", in: context.range)
+
+        XCTAssertEqual(textView.string, "before @The Office office")
+        XCTAssertEqual(textView.selectedRange(), NSRange(location: 18, length: 0))
+    }
+
+    func testTagCompletionRemainsWhitespaceBounded() {
+        let textView = EnterSubmitTextView()
+        textView.string = "buy #gro"
+        textView.setSelectedRange(NSRange(location: textView.string.utf16.count, length: 0))
+
+        XCTAssertEqual(textView.currentCompletionContext(), CompletionContext(
+            text: "#gro", range: NSRange(location: 4, length: 4)))
+    }
+
+    func testEmailAtDoesNotTriggerListCompletion() {
+        let textView = EnterSubmitTextView()
+        textView.string = "email@example.com"
+        textView.setSelectedRange(NSRange(location: textView.string.utf16.count, length: 0))
+
+        XCTAssertEqual(textView.currentCompletionContext(), CompletionContext(
+            text: "email@example.com", range: NSRange(location: 0, length: 17)))
+    }
 }

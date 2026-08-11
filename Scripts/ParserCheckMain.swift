@@ -150,14 +150,30 @@ struct ParserCheck {
         checkEqual(r.listToken, "home depot", "10 list token")
         check(r.listMatched, "10 list matched")
         checkEqual(r.title, "shopping", "10 title")
+        check(r.diagnostics.isEmpty, "10 diagnostics empty for matched list")
     }
 
-    // 11. unmatched list
+    // 11. unmatched list (whole-line @ stays in the title)
     do {
         let r = parse("@unknown list task")
-        checkEqual(r.listToken, "unknown", "11 list token")
+        check(r.listToken == nil, "11 no list token")
         check(!r.listMatched, "11 unmatched")
-        checkEqual(r.title, "list task", "11 title")
+        check(r.locationPhrase == nil, "11 no location (line-start @)")
+        checkEqual(r.diagnostics, [.unmatchedList("unknown")], "11 unmatched-list diagnostic")
+        checkEqual(r.title, "@unknown list task", "11 title")
+    }
+
+    // 11b. unmatched @ mid-line becomes a location phrase
+    do {
+        let r = parse("buy milk @the office")
+        checkEqual(r.locationPhrase, "the office", "11b location")
+        check(r.listToken == nil, "11b no list token")
+        check(r.diagnostics.isEmpty, "11b diagnostics empty for location @phrase")
+        checkEqual(r.title, "buy milk", "11b title")
+        let spaced = parse("buy milk @ the office")
+        checkEqual(spaced.locationPhrase, "the office", "11b location (space after @)")
+        checkEqual(spaced.title, "buy milk", "11b title (space after @)")
+        check(spaced.diagnostics.isEmpty, "11b spaced diagnostics empty")
     }
 
     // 12. address location
@@ -188,6 +204,22 @@ struct ParserCheck {
         let r = parse("tomorrow")
         check(r.isInvalid, "15 isInvalid")
         checkDate(r.dueDate, date(2026, 8, 10, 12, 0), "15 due")
+        checkEqual(r.diagnostics, [.emptyTitle], "15 empty-title diagnostic")
+    }
+
+    // 15b. tag-only line is invalid with an empty-title diagnostic
+    do {
+        let r = parse("#groceries")
+        check(r.isInvalid, "15b isInvalid")
+        checkEqual(r.diagnostics, [.emptyTitle], "15b empty-title diagnostic")
+    }
+
+    // 15c. email addresses do not create list warnings
+    do {
+        let r = parse("Email john@home.example about the party")
+        check(r.listToken == nil && !r.listMatched, "15c email is not a list")
+        checkEqual(r.title, "Email john@home.example about the party", "15c email title")
+        check(r.diagnostics.isEmpty, "15c email diagnostics empty")
     }
 
     // 16. multiple dates
@@ -323,9 +355,10 @@ struct ParserCheck {
         checkEqual(compound.title, "buy low-fat milk", "27 title intact")
         let list = parse("meet @p1")
         checkEqual(list.priority, 0, "27 priority (@p1 not a priority)")
-        checkEqual(list.listToken, "p1", "27 list token")
+        check(list.listToken == nil, "27 no list token")
         check(!list.listMatched, "27 list unmatched")
-        checkEqual(list.title, "meet", "27 title")
+        check(list.locationPhrase == nil, "27 no location (\"p1\" too short)")
+        checkEqual(list.title, "meet @p1", "27 title")
     }
 
     // 28. tomorrow night keeps its time
@@ -426,6 +459,31 @@ struct ParserCheck {
         check(!SearchParser.matches(query: q, calendarTitle: "Work", priority: 0,
                                     title: "an urgent matter", notes: nil), "39 search: prose #urgent never matches")
         checkEqual(NaturalLanguageParser.extractTags(from: "buy milk #urgent."), ["urgent"], "39 extractTags: punctuation stripped")
+    }
+
+    // 40. #ongoing preserves title, tags, and the real Thursday due date
+    do {
+        let r = parse("Prepare for the planning meeting Thursday #ongoing")
+        checkEqual(r.title, "Prepare for the planning meeting", "40 title")
+        checkEqual(r.tags, ["ongoing"], "40 tags")
+        checkDate(r.dueDate, date(2026, 8, 13, 12, 0), "40 due (Thursday remains intact)")
+    }
+
+    // 41. #ongoing detection is case-insensitive across title and notes
+    do {
+        check(NaturalLanguageParser.isOngoing(title: "Review #ONGOING", notes: nil), "41 ongoing in title")
+        check(NaturalLanguageParser.isOngoing(title: "Review", notes: "marker #OnGoInG"), "41 ongoing in notes")
+    }
+
+    // 42. #ongoingly is not the ongoing marker
+    do {
+        check(!NaturalLanguageParser.isOngoing(title: "Review #ongoingly", notes: nil), "42 longer token does not match")
+    }
+
+    // 43. removing a trailing marker preserves prose, line breaks, and #work
+    do {
+        let notes = "Project context\n#work\n#ongoing"
+        checkEqual(NaturalLanguageParser.removingTag("ongoing", from: notes), "Project context\n#work", "43 notes removal")
     }
 
     print("Parser check: \(passed) passed, \(failures) failed")

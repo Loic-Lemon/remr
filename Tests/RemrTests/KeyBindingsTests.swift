@@ -18,6 +18,27 @@ final class KeyBindingsTests: XCTestCase {
         }
     }
 
+    func testEditSnoozeUndoDefaultsAndLabels() {
+        XCTAssertEqual(BindableAction.editRow.label, "Edit selected reminder")
+        XCTAssertEqual(BindableAction.snoozeRow.label, "Snooze selected reminder")
+        XCTAssertEqual(BindableAction.undo.label, "Undo last action")
+        XCTAssertEqual(DefaultBindings.all[.editRow], KeyCombo([.key(14)])) // kVK_ANSI_E
+        XCTAssertEqual(DefaultBindings.all[.snoozeRow], KeyCombo([.key(1)])) // kVK_ANSI_S
+        XCTAssertEqual(DefaultBindings.all[.undo], KeyCombo([.modifier(.command), .key(6)])) // kVK_ANSI_Z
+    }
+
+    func testQuickAddDefaultAndLabel() {
+        let combo = KeyCombo([.modifier(.option), .modifier(.command), .key(45)]) // kVK_ANSI_N
+        XCTAssertEqual(DefaultBindings.all[.quickAdd], combo)
+        XCTAssertEqual(combo.displayString, "⌥⌘N")
+        XCTAssertEqual(BindableAction.quickAdd.label, "Quick add reminder")
+        XCTAssertTrue(BindableAction.quickAdd.isGlobalHotkey)
+        XCTAssertEqual(combo.globalHotkeyKeyCode, 45)
+
+        let (store, _) = makeStore()
+        XCTAssertEqual(store.combo(for: .quickAdd), combo)
+    }
+
     func testKeyComboCodableRoundTrip() {
         let combo = KeyCombo([.modifier(.command), .key(3)])
         let data = try! JSONEncoder().encode(combo)
@@ -180,13 +201,56 @@ final class KeyBindingsTests: XCTestCase {
         XCTAssertEqual(store.combo(for: .togglePopover), KeyCombo([]))
     }
 
+    func testQuickAddAcceptsValidReassignment() {
+        let (store, defaults) = makeStore()
+        let replacement = KeyCombo([.modifier(.command), .key(45)]) // ⌘N
+        XCTAssertEqual(replacement.globalHotkeyKeyCode, 45)
+
+        XCTAssertTrue(store.assign(replacement, to: .quickAdd))
+        XCTAssertEqual(store.combo(for: .quickAdd), replacement)
+        XCTAssertNil(store.errorMessage)
+
+        // Persisted: a reloaded store keeps the override.
+        let reloaded = SettingsStore(defaults: defaults)
+        XCTAssertEqual(reloaded.combo(for: .quickAdd), replacement)
+    }
+
+    func testQuickAddAcceptsEmptyDisable() {
+        let (store, defaults) = makeStore()
+
+        XCTAssertTrue(store.assign(KeyCombo([]), to: .quickAdd))
+        XCTAssertTrue(store.combo(for: .quickAdd).isEmpty)
+        XCTAssertNil(store.errorMessage)
+
+        // Persisted: reload keeps the binding disabled.
+        let reloaded = SettingsStore(defaults: defaults)
+        XCTAssertTrue(reloaded.combo(for: .quickAdd).isEmpty)
+    }
+
+    func testQuickAddRejectsMultiPlainKeyCombo() {
+        let (store, defaults) = makeStore()
+        let original = store.combo(for: .quickAdd)
+
+        // Two plain keys, no modifiers: not a valid global-hotkey shape.
+        let multiPlain = KeyCombo([.key(3), .key(15)]) // F + R
+        XCTAssertFalse(store.assign(multiPlain, to: .quickAdd))
+        XCTAssertNotNil(store.errorMessage)
+        XCTAssertTrue(store.errorMessage!.contains("exactly one key"))
+        XCTAssertEqual(store.combo(for: .quickAdd), original)
+        XCTAssertNil(defaults.data(forKey: "remr.keyBindings"))
+    }
+
     func testPersistAndReload() {
         let (store, defaults) = makeStore()
         XCTAssertTrue(store.assign(KeyCombo([.key(38)]), to: .moveDown))  // "J"
+        XCTAssertTrue(store.assign(KeyCombo([.key(14)]), to: .editRow))   // "E"
 
         let second = SettingsStore(defaults: defaults)
         XCTAssertEqual(second.combo(for: .moveDown), KeyCombo([.key(38)]))
+        XCTAssertEqual(second.combo(for: .editRow), KeyCombo([.key(14)]))
         XCTAssertEqual(second.combo(for: .focusSearch), DefaultBindings.all[.focusSearch])
+        XCTAssertEqual(second.combo(for: .snoozeRow), DefaultBindings.all[.snoozeRow])
+        XCTAssertEqual(second.combo(for: .undo), DefaultBindings.all[.undo])
     }
 
     func testResetToDefaults() {

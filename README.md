@@ -1,124 +1,82 @@
 # remr
 
-A keyboard-first Reminders companion that lives in your menu bar.
+[![macOS](https://img.shields.io/badge/macOS-13%2B-9cf)](#requirements)
+[![Swift](https://img.shields.io/badge/Swift-5.10-orange)](Package.swift)
 
-remr puts a checklist icon in the macOS menu bar. Click it, type a reminder
-in plain English — `pick up dry cleaning tomorrow at 5pm @errands` — and the
-due date, list, priority, tags, and location are parsed out of the line as
-you type. Everything stays in sync with the Reminders app in both directions.
+A keyboard-first Reminders companion for your macOS menu bar.
+
+Type a reminder in plain English — `pick up dry cleaning tomorrow at 5pm @errands` — and remr turns it into a real reminder, in sync with the Reminders app both ways.
 
 ## Features
 
-- **Natural-language capture** — `tomorrow at 5pm`, `@home`, `high priority`, `at the office`: each becomes a real reminder field.
-- **Keyword autocomplete** — start typing a date or priority and press Tab to complete it.
-- **Quick description** — a notes box appears as you type; Enter creates, Shift+Enter adds a line.
-- **Overdue / Today / Later** — the whole list in one popover, no Dock icon needed.
-- **Keyboard-first** — arrows move the selection, Enter completes, ⌘Enter opens in Reminders, ⌫ deletes, Tab hops title → notes → search → list, Esc steps back.
-- **Customizable shortcuts** — every shortcut is rebindable in Settings (gear icon or ⌘,), including the global hotkey that opens remr from anywhere (⌥⌘R by default).
-- **Search** — filter by list (`@work`), tag (`#urgent`), priority (`!!`), or any text, all combinable.
-- **Tag filtering** — click any `#tag` chip to show only reminders with that tag; click it again (or the ✕) to clear. The filter sticks across launches until you change it.
-- **Tags** — `#groceries` gets a colored chip; right-click a chip to recolor it.
-- **Recently Completed & Recently Deleted** — mistakes are recoverable: deleted reminders can be restored.
-- **Location reminders** — `at the office` attaches a geofenced alarm.
-- **macOS Service** — select text anywhere, then *Services → Create Reminders*: the first line becomes the title, the rest the description.
-- **Always in sync** — Reminders.app changes appear automatically (30-second refresh plus live change notifications).
+- **Plain-English input** — `tomorrow at 5pm`, `@home`, `#groceries`, `at the office` become real reminder fields
+- **Quick Add** — global shortcut (⌥⌘N) opens a compact composer from anywhere; no need to switch apps
+- **Reminder Editing** — open any reminder inline to change title, notes, due date, priority, list, location, or tags
+- **Bulk Reminder Creation** — paste multiple lines; preview each parsed reminder; create all, select a subset, or retry only the failed ones
+- **Tag Manager** — rename, recolor, or remove tags across every reminder with one click
+- **Snooze Menu** — one-click snooze with smart presets: 1 hour, later today, tomorrow morning, tomorrow evening, next Monday
+- **Keyboard-first** — arrows, Enter, ⌘Enter, ⌫, Tab, Esc — everything from the keyboard
+- **Customizable Shortcuts** — rebind any action (⌘,), including the global shortcuts ⌥⌘R (open remr) and ⌥⌘N (quick add)
+- **Appearance Modes** — Light, Dark, or Follow System
+- **Parse Preview** — live parsing feedback as you type; diagnostics show warnings before you create
+- **One Popover** — overdue, today, this week, next week, this month, next month, and future, no Dock icon needed
+- **Search & Tags** — filter with `@work`, `#urgent`, `!!`, the tag dropdown (with its own search box), or a `#tag` chip
+- **Safety Net** — completed and deleted reminders can be restored from the Archive
+- **Fast Popover** — optimized presentation, glass-backed surfaces, no flicker
 
-## Natural language
-
-Type a line and press Enter. The title field parses:
-
-| You type | What happens |
-|---|---|
-| `tomorrow at 5pm` | Due tomorrow at 5 PM |
-| `in 2 days` | Relative due date |
-| `later`, `end of day`, `eod` | Due by 5 PM today |
-| `@home` | Put it in the Home list (matched against your list names) |
-| `high priority` | High priority — `medium`, `low`, and `p1`–`p3` work too |
-| `at the office` | Add a location reminder (geofenced alarm) |
-| `#groceries` | Tag it (colored chip) |
-| `tomorrow` | All-day reminder for tomorrow — add a time to make it timed |
-
-Notes:
-- A date with no time is an all-day reminder.
-- An unmatched `@list` stays in the title so nothing is silently lost.
-- A bare clock time that already passed rolls over to tomorrow.
-
-Press **Enter** to move from the title to the description, **Enter** again to
-create. **Shift+Enter** inserts a new line.
-
-## Search
-
-The search field filters the list; all conditions combine:
-
-| You type | Matches |
-|---|---|
-| `@work` | Only the Work list |
-| `#urgent` | Titles or notes tagged with it |
-| `!!` | High priority only |
-| `text` | Any title or note containing it |
-
-Click any `#tag` chip to filter the whole list to that tag (search still
-combines with it); click the active chip again — or the ✕ next to the filter —
-to clear. The filter persists across launches as the app's default view.
-
-## Keyboard
-
-Once the list is focused (Tab into it from the search field), the whole
-popover runs from the keyboard:
-
-| Keys | Action |
-|---|---|
-| `⌥⌘R` | Open remr from anywhere (global hotkey) |
-| `↑` / `↓` | Move the selection |
-| `Page Up` / `Page Down` | Move by a page |
-| `Space` / `⇧Space` | Scroll |
-| `Enter` | Complete a reminder (restore a deleted one, expand a tab) |
-| `⌘Enter` | Open in Reminders |
-| `⌫` | Delete (delete forever in Recently Deleted) |
-| `←` | Open / close Recently Completed and Recently Deleted |
-| `Tab` | Next field: title → notes → search → list (Shift+Tab goes back) |
-| `⌘F` | Focus search |
-| `Esc` | Step back: clear the selection, then the search, then close |
-
-Every shortcut is rebindable. Click the gear icon in the popover — or press
-**⌘,** — to open Settings, click a keycap to capture a new chord, then Save;
-changes apply immediately and persist across launches, and **Reset to
-defaults** restores the table above. The global hotkey must be exactly one
-plain key plus any modifiers.
-
-## Managing reminders
-
-- Click the circle to complete it — it lands in **Recently Completed**.
-- Right-click a row → Delete to delete it. EventKit has no trash, so remr keeps a local shadow copy: restore it from **Recently Deleted** while it's listed, or delete it forever there.
-- Click a row to open the reminder in Reminders.
-- Right-click the menu bar icon for **Refresh** and **Quit**.
-
-## Requirements
-
-- macOS 13 or later
-- Xcode or Command Line Tools for building (no third-party dependencies)
-
-## Install & build
+## Install
 
 ```bash
 git clone https://github.com/Loic-Lemon/remr.git
 cd remr
-swift build            # produces .build/debug/remr
-Scripts/make-bundle.sh # produces build/Build/Products/Debug/remr.app
+swift build
+Scripts/make-bundle.sh
 ```
 
-`make-bundle.sh` assembles and ad-hoc signs a proper `.app` bundle (the
-Reminders entitlement is applied automatically). Copy `remr.app` to
-`/Applications` — that's the way to run remr day-to-day. The bare binary
-(`swift run remr`) is unsigned and lacks the Reminders entitlement, so it
-can't access your reminders; use it only to smoke-test the build.
+Copy `build/Build/Products/Debug/remr.app` to `/Applications` and grant Reminders access on first launch.
 
-On first launch, grant Reminders access when prompted. If you denied it,
-enable it under **System Settings → Privacy & Security → Reminders**.
+> Use the `.app` — the bare binary (`swift run remr`) is unsigned and can't access your reminders.
+
+## Quick Reference
+
+**Typing a reminder** — a few examples:
+
+| You type | What happens |
+|---|---|
+| `tomorrow at 5pm` | Due tomorrow at 5 PM |
+| `@home` · `#groceries` · `at the office` | List, tag, or location |
+| `high priority` | Priority (`p1`–`p3`, `low` too) |
+
+**The list** — click a row to select it (highlighted); click again to open in Reminders. Arrows move the selection, Enter completes, ⌘Enter opens in Reminders, ⌫ deletes. Right-click supports moving, duplicating, and copying a title. Completed and deleted reminders are available from the Archive icon.
+
+**Quick Add (⌥⌘N)** — type, see live parse preview, press Enter to create. Esc cancels.
+
+**Editing a reminder** — double-click or right-click → Edit. Change any field; Save writes back to Reminders.app.
+
+**Bulk Add** — click the bulk button (or paste multiple lines), review the preview, toggle rows, Create Selected or Retry Failed.
+
+**Search** — `@work`, `#urgent`, `!!`, or any text; use the tag dropdown (right of the search box, with its own search) or click a `#tag` chip to filter by tag. Open the tag picker's gear to rename, recolor, or remove tags.
+
+**Snooze** — right-click a reminder → Snooze; pick a preset. The due date shifts, priority and list stay intact.
+
+**Sync** — the footer shows a friendly update status such as "Updated moments ago" or "Updated today."
+
+**Settings (⌘,)** — rebind any shortcut; both global shortcuts (⌥⌘R to open remr and ⌥⌘N to quick add) are editable there. Choose Light/Dark/System appearance.
+
+**Also** — Enter adds notes (Shift+Enter = new line) · select text in any app → Services → Create Reminders · right-click the menu bar icon to Refresh or Quit.
+
+A date without a time is all-day; a time that already passed rolls to tomorrow.
+
+## Requirements
+
+macOS 13 or later · Xcode or Command Line Tools to build · no third-party dependencies
 
 ## Development
 
-- `swift test` runs the unit tests (requires full Xcode — XCTest is not in Command Line Tools).
-- `Scripts/parser-check.sh` runs the parser harness with just Command Line Tools.
-- Layout: `Sources/remr/Core/Parser/` holds the pure, unit-tested natural-language and search parsers; `Sources/remr/Core/ReminderStore.swift` is the EventKit layer plus the Recently Deleted shadow store (`~/Library/Application Support/remr/deleted.json`).
-- The macOS Service is registered in `Support/Info.plist` (`NSServices` → *Create Reminders*).
+- `swift test` — unit tests (needs full Xcode)
+- `Scripts/parser-check.sh` — parser harness (Command Line Tools only)
+- Parsers: `Sources/remr/Core/Parser/` · EventKit: `Sources/remr/Core/ReminderStore.swift`
+
+---
+
+<p align="center"><sub>Built with <a href="https://www.deepseek.com/">DeepSeek V4 Flash</a> via <a href="https://opencode.ai/go">opencode go</a> on <a href="https://github.com/can1357/oh-my-pi">Oh My Pi</a></sub></p>

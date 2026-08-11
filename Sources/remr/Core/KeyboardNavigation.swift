@@ -20,6 +20,9 @@ struct KeyboardContext {
     var selectionIsHeader: Bool
     var hasSelection: Bool
     var searchHasText: Bool
+    var selectionIsReminder: Bool
+    var selectionIsCompleted: Bool
+    var hasUndo: Bool
 }
 
 /// A key event translated into an action for the executor to run.
@@ -38,6 +41,9 @@ enum KeyAction: Equatable {
     case activateRow             // Enter: complete / restore / toggle header
     case openRow                 // ⌘Enter: open in Reminders
     case deleteRow               // ⌫: delete / delete forever
+    case editRow                 // Edit the selected reminder
+    case snoozeRow               // Snooze the selected reminder
+    case undo                    // Undo the most recent undoable mutation
 }
 
 enum KeyboardRouter {
@@ -95,7 +101,7 @@ enum KeyboardRouter {
             return noFieldFocused ? .scrollPage(-1) : .none
 
         case .toggleHeader:
-            return (noFieldFocused && context.selectionIsHeader) ? .toggleHeader : .none
+            return noFieldFocused ? .toggleHeader : .none
 
         case .activateRow:
             return (noFieldFocused && context.hasSelection) ? .activateRow : .none
@@ -103,6 +109,12 @@ enum KeyboardRouter {
             return (noFieldFocused && context.hasSelection) ? .openRow : .none
         case .deleteRow:
             return (noFieldFocused && context.hasSelection) ? .deleteRow : .none
+        case .editRow:
+            return (noFieldFocused && context.selectionIsReminder) ? .editRow : .none
+        case .snoozeRow:
+            return (noFieldFocused && context.selectionIsReminder && !context.selectionIsCompleted) ? .snoozeRow : .none
+        case .undo:
+            return (noFieldFocused && context.hasUndo) ? .undo : .none
 
         case .closePopover: // Escape — text field owns it, then selection, then search text, else close.
             if context.textFieldFocused { return .none }
@@ -111,6 +123,8 @@ enum KeyboardRouter {
             return .closePopover
 
         case .togglePopover:
+            return .none
+        case .quickAdd:
             return .none
         }
     }

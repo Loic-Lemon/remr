@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var store: ReminderStore
+    @EnvironmentObject var settings: SettingsStore
 
     var body: some View {
         Group {
@@ -14,9 +15,8 @@ struct ContentView: View {
                 MainView()
             }
         }
-        .preferredColorScheme(.light)
         .frame(width: 400, height: 600)
-        .background(.ultraThinMaterial.opacity(0.45))
+        .liquidGlassContainer()
     }
 
     // MARK: - Not determined
@@ -34,6 +34,7 @@ struct ContentView: View {
                 Task { await store.requestAccess() }
             }
             .keyboardShortcut(.defaultAction)
+            .liquidGlassButtonStyle(.bordered, prominent: true)
         }
         .padding(24)
     }
@@ -52,9 +53,11 @@ struct ContentView: View {
             Button("Open System Settings") {
                 NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Reminders")!)
             }
+            .liquidGlassButtonStyle(.bordered)
             Button("Try Again") {
                 Task { await store.requestAccess() }
             }
+            .liquidGlassButtonStyle(.bordered)
         }
         .padding(24)
     }

@@ -9,18 +9,33 @@ struct ReminderRowView: View {
     let reminder: EKReminder
     /// Keyboard-selection highlight (accent fill, same as the suggestion dropdown).
     var isSelected: Bool = false
-    /// Called after the reminder was just completed (for the completion toast).
-    var onComplete: ((EKReminder) -> Void)? = nil
+    /// Called when the row is clicked while not selected (first click selects,
+    /// second click opens in Reminders).
+    var onSelect: (() -> Void)? = nil
+    /// MainView owns every EventKit mutation so completion and deletion share
+    /// the same error/recovery behavior as keyboard actions.
+    var onToggleCompletion: ((EKReminder) -> Void)? = nil
+    var onDelete: ((EKReminder) -> Void)? = nil
+    var onEdit: ((EKReminder) -> Void)? = nil
+    var onSnooze: ((EKReminder) -> Void)? = nil
+    var onDuplicate: ((EKReminder) -> Void)? = nil
+    var onMoveToList: ((EKReminder, String?) -> Void)? = nil
+    var onCopyTitle: ((EKReminder) -> Void)? = nil
 
     private func toggleComplete() {
-        Task { @MainActor in
-            await store.toggleCompletion(reminder)
-            if reminder.isCompleted { onComplete?(reminder) }
-        }
+        onToggleCompletion?(reminder)
     }
 
     private var hasLocation: Bool {
         reminder.alarms?.contains { $0.structuredLocation != nil } ?? false
+    }
+
+    /// The location's display name (the phrase typed at creation), when the
+    /// reminder carries a geofenced alarm with a title.
+    private var locationTitle: String? {
+        reminder.alarms?
+            .compactMap { $0.structuredLocation?.title }
+            .first { !$0.isEmpty }
     }
 
     /// #tags from title + notes (tags remr saves live in notes; older or
@@ -28,6 +43,10 @@ struct ReminderRowView: View {
     private var tags: [String] {
         NaturalLanguageParser.extractTags(from: (reminder.title ?? "") + " " + (reminder.notes ?? ""))
     }
+    private var isOngoing: Bool {
+        NaturalLanguageParser.isOngoing(title: reminder.title, notes: reminder.notes)
+    }
+
 
     private var isOverdue: Bool {
         guard let due = Calendar.current.date(from: reminder.dueDateComponents ?? DateComponents()) else { return false }
@@ -74,21 +93,56 @@ struct ReminderRowView: View {
             if isSelected {
                 RoundedRectangle(cornerRadius: 6)
                     .fill(Color.accentColor.opacity(0.16))
+                    .overlay(RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(Color.accentColor.opacity(0.45), lineWidth: 1))
             }
         }
         .contentShape(Rectangle())
-        // Whole-row tap opens the reminder in Reminders (README/GuideView).
-        // Buttons (completion circle, tag chips) consume their own taps, so
-        // they never double-fire this gesture.
-        .onTapGesture { store.openInReminders(reminder) }
+        // First click selects the row (showing the highlight); clicking the
+        // selected row again opens it in Reminders. Buttons (completion
+        // circle, tag chips) consume their own taps, so they never
+        // double-fire this gesture.
+        .onTapGesture {
+            if isSelected {
+                store.openInReminders(reminder)
+            } else {
+                onSelect?()
+            }
+        }
         .contextMenu {
             Button(reminder.isCompleted ? "Mark as Not Completed" : "Mark as Completed") {
                 toggleComplete()
             }
+            if !reminder.isCompleted {
+                Button(isOngoing ? "Remove from Ongoing" : "Mark as Ongoing") {
+                    Task { @MainActor in
+                        await store.setOngoing(reminder, enabled: !isOngoing)
+                    }
+                }
+            }
+
             Button("Open in Reminders") { store.openInReminders(reminder) }
+            Button("Edit") { onEdit?(reminder) }
+            if !reminder.isCompleted {
+                Button("Snooze") { onSnooze?(reminder) }
+            }
+
+            Menu("Move to List") {
+                Button("Default list") {
+                    onMoveToList?(reminder, nil)
+                }
+                Divider()
+                ForEach(store.reminderCalendars(), id: \.calendarIdentifier) { calendar in
+                    Button(calendar.title) {
+                        onMoveToList?(reminder, calendar.calendarIdentifier)
+                    }
+                }
+            }
+            Button("Duplicate") { onDuplicate?(reminder) }
+            Button("Copy Title") { onCopyTitle?(reminder) }
             Divider()
             Button("Delete", role: .destructive) {
-                Task { await store.deleteReminder(reminder) }
+                onDelete?(reminder)
             }
         }
     }
@@ -113,8 +167,9 @@ struct ReminderRowView: View {
                         Text(due.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated)))
                             .foregroundStyle(.red)
                     } else {
-                        if let label = Self.dueLabel(for: reminder, calendar: .current), !label.isEmpty {
-                            Text(label)
+                        Text(Self.dateLabel(for: due, calendar: .current))
+                        if comps.hour != nil {
+                            Text(due.formatted(date: .omitted, time: .shortened))
                         }
                     }
                 }
@@ -128,6 +183,10 @@ struct ReminderRowView: View {
                 Image(systemName: "mappin")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                if let locationTitle {
+                    Text(locationTitle)
+                        .lineLimit(1)
+                }
             }
             ForEach(tags, id: \.self) { tag in
                 TagChip(name: tag)
@@ -199,28 +258,22 @@ struct ReminderRowView: View {
         }
     }
 
-    /// "Today · 5:00 PM", "Tomorrow · 3:00 PM", "Yesterday · 9:00 AM",
-    /// or an absolute date; time omitted for all-day reminders.
-    static func dueLabel(for reminder: EKReminder, calendar: Calendar) -> String? {
-        guard let comps = reminder.dueDateComponents, let due = calendar.date(from: comps) else { return nil }
-        return label(for: due, hasTime: comps.hour != nil, calendar: calendar)
-    }
-
-    static func label(for due: Date, hasTime: Bool, calendar: Calendar = .current) -> String {
+    /// "Today", "Tomorrow", "Yesterday", or an absolute date. The time is
+    /// rendered separately by the row (only for timed reminders).
+    static func dateLabel(for due: Date, calendar: Calendar = .current) -> String {
         let startOfToday = calendar.startOfDay(for: Date())
         let startOfTomorrow = calendar.date(byAdding: .day, value: 1, to: startOfToday)!
         let startOfYesterday = calendar.date(byAdding: .day, value: -1, to: startOfToday)!
         let dayAfterTomorrow = calendar.date(byAdding: .day, value: 2, to: startOfToday)!
-        let time = due.formatted(date: .omitted, time: .shortened)
         switch due {
         case startOfToday..<startOfTomorrow:
-            return hasTime ? "Today · \(time)" : "Today"
+            return "Today"
         case startOfYesterday..<startOfToday:
-            return hasTime ? "Yesterday · \(time)" : "Yesterday"
+            return "Yesterday"
         case startOfTomorrow..<dayAfterTomorrow:
-            return hasTime ? "Tomorrow · \(time)" : "Tomorrow"
+            return "Tomorrow"
         default:
-            return due.formatted(date: .abbreviated, time: hasTime ? .shortened : .omitted)
+            return due.formatted(date: .abbreviated, time: .omitted)
         }
     }
 }

@@ -124,14 +124,36 @@ final class NaturalLanguageParserTests: XCTestCase {
         let r = NaturalLanguageParser.parse("@home depot shopping", now: now, calendar: .current, listNames: ["Home Depot"])
         XCTAssertEqual(r.listToken, "home depot")
         XCTAssertTrue(r.listMatched)
-        XCTAssertEqual(r.title, "shopping")
+        XCTAssertTrue(r.diagnostics.isEmpty)
     }
 
     func test11UnmatchedList() {
+        // A line that is only "@phrase" (no title words before the @) keeps
+        // the unmatched-list shape: the @ stays in the title.
         let r = parse("@unknown list task")
-        XCTAssertEqual(r.listToken, "unknown")
+        XCTAssertNil(r.listToken)
         XCTAssertFalse(r.listMatched)
-        XCTAssertEqual(r.title, "list task")
+        XCTAssertNil(r.locationPhrase)
+        XCTAssertEqual(r.title, "@unknown list task")
+        XCTAssertEqual(r.diagnostics, [.unmatchedList("unknown")])
+    }
+
+    func test11bAtSignPhraseBecomesLocation() {
+        // "buy milk @the office" — an unmatched @ mid-line is a location
+        // phrase, exactly like "at the office".
+        let r = parse("buy milk @the office")
+        XCTAssertEqual(r.locationPhrase, "the office")
+        XCTAssertNil(r.listToken)
+        XCTAssertFalse(r.listMatched)
+        XCTAssertEqual(r.title, "buy milk")
+        XCTAssertTrue(r.diagnostics.isEmpty)
+    }
+
+    func test11cAtSignPhraseWithDueDate() {
+        let r = parse("buy milk @the office tomorrow")
+        XCTAssertEqual(r.locationPhrase, "the office")
+        assertDate(r.dueDate, date(2026, 8, 10, 12, 0), "location + due date combine")
+        XCTAssertEqual(r.title, "buy milk")
     }
 
     func test12AddressLocation() {
@@ -160,6 +182,7 @@ final class NaturalLanguageParserTests: XCTestCase {
         let r = parse("tomorrow")
         XCTAssertTrue(r.isInvalid)
         assertDate(r.dueDate, date(2026, 8, 10, 12, 0))
+        XCTAssertEqual(r.diagnostics, [.emptyTitle])
     }
 
     func test16MultipleDates() {
@@ -204,6 +227,7 @@ final class NaturalLanguageParserTests: XCTestCase {
         let r = parse("#groceries")
         XCTAssertEqual(r.tags, ["groceries"])
         XCTAssertTrue(r.isInvalid)
+        XCTAssertEqual(r.diagnostics, [.emptyTitle])
     }
 
     func test23TagBeforeDateDoesNotBecomeDueDate() {
@@ -309,6 +333,7 @@ final class NaturalLanguageParserTests: XCTestCase {
         XCTAssertNil(r.listToken)
         XCTAssertFalse(r.listMatched)
         XCTAssertEqual(r.title, "Email john@home.example about the party")
+        XCTAssertTrue(r.diagnostics.isEmpty)
     }
 
     // MARK: - Regression: autocomplete keywords, rollover, priority compounds
@@ -375,15 +400,17 @@ final class NaturalLanguageParserTests: XCTestCase {
 
     func test43BarePriorityNotInCompound() {
         // Bare priority keywords are standalone tokens only: "low-fat" keeps
-        // its prefix, "@p1" is a list token, not a priority.
+        // its prefix, and "@p1" is a title token (too short for a location
+        // phrase, and no list matches it), not a priority.
         let compound = parse("buy low-fat milk")
         XCTAssertEqual(compound.priority, 0, "low-fat is not a priority")
         XCTAssertEqual(compound.title, "buy low-fat milk")
         let list = parse("meet @p1")
         XCTAssertEqual(list.priority, 0, "@p1 is not a priority")
-        XCTAssertEqual(list.listToken, "p1")
+        XCTAssertNil(list.listToken)
         XCTAssertFalse(list.listMatched)
-        XCTAssertEqual(list.title, "meet")
+        XCTAssertNil(list.locationPhrase, "\"p1\" is too short for a location phrase")
+        XCTAssertEqual(list.title, "meet @p1")
     }
 
     func test44TomorrowNightHasTime() {
@@ -478,5 +505,40 @@ final class NaturalLanguageParserTests: XCTestCase {
         // "#urgent." must yield the same tag as "#urgent" so chips, filter,
         // and search agree.
         XCTAssertEqual(NaturalLanguageParser.extractTags(from: "buy milk #urgent."), ["urgent"])
+    }
+
+    func test56OngoingTagPreservesDateAndTitle() {
+        let r = parse("Prepare for the planning meeting Thursday #ongoing")
+        XCTAssertEqual(r.title, "Prepare for the planning meeting")
+        XCTAssertEqual(r.tags, ["ongoing"])
+        assertDate(r.dueDate, date(2026, 8, 13, 12, 0), "Thursday due date remains intact")
+    }
+
+    func test57OngoingDetectionIsCaseInsensitiveAcrossTitleAndNotes() {
+        XCTAssertTrue(NaturalLanguageParser.isOngoing(title: "Review #ONGOING", notes: nil))
+        XCTAssertTrue(NaturalLanguageParser.isOngoing(title: "Review", notes: "marker #OnGoInG"))
+    }
+
+    func test58OngoingDetectionDoesNotMatchLongerToken() {
+        XCTAssertFalse(NaturalLanguageParser.isOngoing(title: "Review #ongoingly", notes: nil))
+    }
+
+    func test59RemovingOngoingTagPreservesNotesContent() {
+        let notes = "Project context\n#work\n#ongoing"
+        XCTAssertEqual(NaturalLanguageParser.removingTag("ongoing", from: notes), "Project context\n#work")
+    }
+    func test60ReplacingTagPreservesPunctuationAndLineBreaks() {
+        let notes = "Context #work, then #work\n#urgent"
+        XCTAssertEqual(
+            NaturalLanguageParser.replacingTag("work", with: "projects", in: notes),
+            "Context #projects, then #projects\n#urgent"
+        )
+    }
+
+    func test61ReplacingTagDoesNotMatchLongerToken() {
+        XCTAssertEqual(
+            NaturalLanguageParser.replacingTag("work", with: "projects", in: "#workshop #work"),
+            "#workshop #projects"
+        )
     }
 }

@@ -35,14 +35,20 @@ final class KeyboardNavigationTests: XCTestCase {
         searchFieldFocused: Bool = false,
         selectionIsHeader: Bool = false,
         hasSelection: Bool = false,
-        searchHasText: Bool = false
+        searchHasText: Bool = false,
+        selectionIsReminder: Bool = false,
+        selectionIsCompleted: Bool = false,
+        hasUndo: Bool = false
     ) -> KeyboardContext {
         KeyboardContext(
             textFieldFocused: textFieldFocused,
             searchFieldFocused: searchFieldFocused,
             selectionIsHeader: selectionIsHeader,
             hasSelection: hasSelection,
-            searchHasText: searchHasText
+            searchHasText: searchHasText,
+            selectionIsReminder: selectionIsReminder,
+            selectionIsCompleted: selectionIsCompleted,
+            hasUndo: hasUndo
         )
     }
 
@@ -59,7 +65,7 @@ final class KeyboardNavigationTests: XCTestCase {
         let deleted = [makeDeleted("d1"), makeDeleted("d2")]
 
         let rows = ListNavigation.rows(
-            sections: [section(.overdue, overdue), section(.today, today), section(.later, later)],
+            sections: [section(.overdue, overdue), section(.today, today), section(.future, later)],
             filtered: [],
             isSearching: false,
             completed: completed,
@@ -84,6 +90,44 @@ final class KeyboardNavigationTests: XCTestCase {
         // order, counts, and header positions are the load-bearing assertions).
         XCTAssertEqual(rows[6], .tabHeader(.completed))
         XCTAssertEqual(rows[9], .tabHeader(.deleted))
+    }
+
+    /// Ongoing rows stay pinned ahead of the chronological sections while recovery
+    /// headers and rows remain at the end of the navigable list.
+    func testRowsOngoingSectionPrecedesChronologicalAndRecoveryRows() {
+        let ongoing = [makeReminder("ongoing1"), makeReminder("ongoing2")]
+        let overdue = [makeReminder("overdue1")]
+        let today = [makeReminder("today1"), makeReminder("today2")]
+        let future = [makeReminder("future1")]
+        let completed = [makeReminder("completed1")]
+        let deleted = [makeDeleted("deleted1")]
+
+        let rows = ListNavigation.rows(
+            sections: [
+                section(.ongoing, ongoing),
+                section(.overdue, overdue),
+                section(.today, today),
+                section(.future, future)
+            ],
+            filtered: [],
+            isSearching: false,
+            completed: completed,
+            showCompleted: true,
+            deleted: deleted,
+            showDeleted: true
+        )
+
+        XCTAssertEqual(
+            rows,
+            ongoing.map { .reminder($0.calendarItemIdentifier) }
+                + overdue.map { .reminder($0.calendarItemIdentifier) }
+                + today.map { .reminder($0.calendarItemIdentifier) }
+                + future.map { .reminder($0.calendarItemIdentifier) }
+                + [.tabHeader(.completed)]
+                + completed.map { .reminder($0.calendarItemIdentifier) }
+                + [.tabHeader(.deleted)]
+                + deleted.map { .deleted($0.id) }
+        )
     }
 
     /// (b) Collapsed tabs contribute only the header.
@@ -383,11 +427,95 @@ final class KeyboardNavigationTests: XCTestCase {
         )
     }
 
+    // MARK: - KeyboardRouter.action: edit / snooze / undo
+
+    func testRouterEditRequiresReminderAndNoFieldFocus() {
+        XCTAssertEqual(
+            KeyboardRouter.action(keyCode: 14, heldKeyCodes: [14],
+                                  context: context(selectionIsReminder: true)),
+            .editRow
+        )
+        // Completed reminders remain editable; completion only restricts snooze.
+        XCTAssertEqual(
+            KeyboardRouter.action(keyCode: 14, heldKeyCodes: [14],
+                                  context: context(selectionIsReminder: true, selectionIsCompleted: true)),
+            .editRow
+        )
+        XCTAssertEqual(
+            KeyboardRouter.action(keyCode: 14, heldKeyCodes: [14],
+                                  context: context(selectionIsHeader: true)),
+            .none
+        )
+        XCTAssertEqual(
+            KeyboardRouter.action(keyCode: 14, heldKeyCodes: [14],
+                                  context: context(textFieldFocused: true, selectionIsReminder: true)),
+            .none
+        )
+        XCTAssertEqual(
+            KeyboardRouter.action(keyCode: 14, heldKeyCodes: [14],
+                                  context: context(searchFieldFocused: true, selectionIsReminder: true)),
+            .none
+        )
+    }
+
+    func testRouterSnoozeRequiresIncompleteReminderAndNoFieldFocus() {
+        XCTAssertEqual(
+            KeyboardRouter.action(keyCode: 1, heldKeyCodes: [1],
+                                  context: context(selectionIsReminder: true)),
+            .snoozeRow
+        )
+        XCTAssertEqual(
+            KeyboardRouter.action(keyCode: 1, heldKeyCodes: [1],
+                                  context: context(selectionIsReminder: true, selectionIsCompleted: true)),
+            .none
+        )
+        XCTAssertEqual(
+            KeyboardRouter.action(keyCode: 1, heldKeyCodes: [1],
+                                  context: context(selectionIsHeader: true)),
+            .none
+        )
+        XCTAssertEqual(
+            KeyboardRouter.action(keyCode: 1, heldKeyCodes: [1],
+                                  context: context(textFieldFocused: true, selectionIsReminder: true)),
+            .none
+        )
+        XCTAssertEqual(
+            KeyboardRouter.action(keyCode: 1, heldKeyCodes: [1],
+                                  context: context(searchFieldFocused: true, selectionIsReminder: true)),
+            .none
+        )
+    }
+
+    func testRouterUndoRequiresUndoEntryAndNoFieldFocus() {
+        XCTAssertEqual(
+            KeyboardRouter.action(keyCode: 6, heldKeyCodes: [55, 6], context: context(hasUndo: true)),
+            .undo
+        )
+        XCTAssertEqual(
+            KeyboardRouter.action(keyCode: 6, heldKeyCodes: [55, 6], context: context()),
+            .none
+        )
+        XCTAssertEqual(
+            KeyboardRouter.action(keyCode: 6, heldKeyCodes: [55, 6],
+                                  context: context(textFieldFocused: true, hasUndo: true)),
+            .none
+        )
+        XCTAssertEqual(
+            KeyboardRouter.action(keyCode: 6, heldKeyCodes: [55, 6],
+                                  context: context(searchFieldFocused: true, hasUndo: true)),
+            .none
+        )
+        // Exact held-key matching remains in force for the new chord.
+        XCTAssertEqual(
+            KeyboardRouter.action(keyCode: 6, heldKeyCodes: [6], context: context(hasUndo: true)),
+            .none
+        )
+    }
+
     // MARK: - KeyboardRouter.action: ←/→ and arrow/page/space guards
 
-    func testRouterLeftTogglesHeaderOnly() {
-        // ← is the default toggle binding; the old → alias was dropped with
-        // one-binding-per-action, so → (keyCode 124) must fall through.
+    func testRouterLeftOpensRecoveryWhenNoFieldFocused() {
+        // ← is the default recovery shortcut; → remains unbound.
         XCTAssertEqual(
             KeyboardRouter.action(keyCode: 123, heldKeyCodes: [123], context: context(selectionIsHeader: true)),
             .toggleHeader
@@ -398,7 +526,7 @@ final class KeyboardNavigationTests: XCTestCase {
         )
         XCTAssertEqual(
             KeyboardRouter.action(keyCode: 123, heldKeyCodes: [123], context: context()),
-            .none
+            .toggleHeader
         )
         XCTAssertEqual(
             KeyboardRouter.action(keyCode: 124, heldKeyCodes: [124], context: context()),

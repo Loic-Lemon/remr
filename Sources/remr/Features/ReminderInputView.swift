@@ -1,6 +1,10 @@
 import AppKit
 import SwiftUI
 
+struct CompletionContext: Equatable {
+    let text: String
+    let range: NSRange
+}
 /// NSTextView that submits on plain Return and inserts a newline on Shift+Return.
 /// While the keyword-suggestion dropdown is active, keyboard routing switches
 /// to navigation (arrows), acceptance (Return/Tab), and dismissal (Escape).
@@ -119,29 +123,89 @@ final class EnterSubmitTextView: NSTextView {
 
     // MARK: - Token access and replacement
 
-    /// The partial word the caret is inside (bounded by whitespace).
-    func currentToken() -> String {
-        (string as NSString).substring(with: currentTokenRange)
+    /// The completion text and its UTF-16 range at the current caret.
+    ///
+    /// List completion has a deliberately broader range than ordinary
+    /// whitespace-bounded keywords: it can contain spaces, but only when the
+    /// `@` starts a token (rather than an email address). A trailing space is
+    /// kept outside the range so accepting a completed multi-word list does
+    /// not consume the user's separator.
+    func currentCompletionContext() -> CompletionContext {
+        let text = string as NSString
+        let length = text.length
+        let rawCaret = selectedRange().location
+        let caret = min(max(rawCaret == NSNotFound ? 0 : rawCaret, 0), length)
+
+        if let listStart = listCompletionStart(in: text, caret: caret) {
+            var end = caret
+            while end > listStart {
+                let component = text.rangeOfComposedCharacterSequence(at: end - 1)
+                let value = text.substring(with: component)
+                guard value.unicodeScalars.allSatisfy({ $0 == " " }) else { break }
+                end = component.location
+            }
+            let range = NSRange(location: listStart, length: end - listStart)
+            return CompletionContext(text: text.substring(with: range), range: range)
+        }
+
+        let range = ordinaryCompletionRange(in: text, caret: caret)
+        return CompletionContext(text: text.substring(with: range), range: range)
     }
 
-    private var currentTokenRange: NSRange {
-        let text = string as NSString
-        let caret = selectedRange().location
-        guard caret != NSNotFound else { return NSRange(location: 0, length: 0) }
-        var start = caret
-        while start > 0 {
-            let scalar = UnicodeScalar(text.character(at: start - 1))
-            guard let scalar, !CharacterSet.whitespacesAndNewlines.contains(scalar) else { break }
-            start -= 1
-        }
+    private func ordinaryCompletionRange(in text: NSString, caret: Int) -> NSRange {
+        guard caret > 0 else { return NSRange(location: 0, length: 0) }
+        let beforeCaret = NSRange(location: 0, length: caret)
+        let whitespace = text.rangeOfCharacter(from: .whitespacesAndNewlines,
+                                                options: .backwards,
+                                                range: beforeCaret)
+        let start = whitespace.location == NSNotFound
+            ? 0
+            : whitespace.location + whitespace.length
         return NSRange(location: start, length: caret - start)
     }
 
-    /// Replace the token under the caret and place the caret after it
-    /// (used to accept a suggestion).
-    func replaceCurrentToken(with replacement: String) {
-        let range = currentTokenRange
-        guard shouldChangeText(in: range, replacementString: replacement) else { return }
+    private func listCompletionStart(in text: NSString, caret: Int) -> Int? {
+        var cursor = caret
+        while cursor > 0 {
+            let component = text.rangeOfComposedCharacterSequence(at: cursor - 1)
+            let value = text.substring(with: component)
+            if value == "@" {
+                let at = component.location
+                if at == 0 || isWhitespaceBoundary(in: text, before: at) {
+                    return at
+                }
+                return nil // The @ belongs to an email address or another word.
+            }
+            guard value.unicodeScalars.allSatisfy(isListBodyScalar) else {
+                return nil // Newlines and punctuation terminate list scanning.
+            }
+            cursor = component.location
+        }
+        return nil
+    }
+
+    private func isWhitespaceBoundary(in text: NSString, before location: Int) -> Bool {
+        guard location > 0 else { return true }
+        let component = text.rangeOfComposedCharacterSequence(at: location - 1)
+        return text.substring(with: component).unicodeScalars.allSatisfy {
+            CharacterSet.whitespacesAndNewlines.contains($0)
+        }
+    }
+
+    private func isListBodyScalar(_ scalar: Unicode.Scalar) -> Bool {
+        scalar == " " || scalar == "-" || scalar == "_"
+            || CharacterSet.letters.contains(scalar)
+            || CharacterSet.decimalDigits.contains(scalar)
+    }
+
+    /// Replace exactly the captured completion range and place the caret
+    /// after the replacement, leaving all text after that range untouched.
+    func replaceCurrentCompletion(with replacement: String, in range: NSRange) {
+        guard range.location >= 0,
+              range.length >= 0,
+              range.location <= string.utf16.count,
+              range.location + range.length <= string.utf16.count,
+              shouldChangeText(in: range, replacementString: replacement) else { return }
         textStorage?.replaceCharacters(in: range, with: replacement)
         didChangeText()
         setSelectedRange(NSRange(location: range.location + (replacement as NSString).length, length: 0))
@@ -163,8 +227,8 @@ struct ReminderInputView: NSViewRepresentable {
     /// Called if this field steals first responder on appearance (used by the
     /// notes field to hand focus back to the title).
     var onAppearInWindow: (() -> Void)? = nil
-    /// Reports the token at the caret after edits and selection changes.
-    var onTokenChange: ((String) -> Void)? = nil
+    /// Reports the completion context at the caret after edits and selection changes.
+    var onTokenChange: ((CompletionContext) -> Void)? = nil
     /// Reports first-responder transitions (drives dropdown visibility).
     var onFocusChange: ((Bool) -> Void)? = nil
     /// Suggestion dropdown state, routed into the keyboard handling.
@@ -177,9 +241,10 @@ struct ReminderInputView: NSViewRepresentable {
     var onFocusBack: (() -> Void)? = nil
     /// Escape with no dropdown steps back (clear selection / close popover).
     var onEscape: (() -> Void)? = nil
-    /// Bump to replace the token under the caret (accept a suggestion).
+    /// Bump to replace the captured completion range (accept a suggestion).
     var replaceTokenRequest = 0
     var replaceTokenWith = ""
+    var replaceTokenRange: NSRange? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -223,12 +288,14 @@ struct ReminderInputView: NSViewRepresentable {
         if textView.appliedReplaceTokenRequest != replaceTokenRequest {
             textView.appliedReplaceTokenRequest = replaceTokenRequest
             let replacement = replaceTokenWith
+            let range = replaceTokenRange
             // Applying inside updateNSView would call textDidChange →
             // binding write, which SwiftUI drops mid-update, and the string
             // sync below would then revert the replacement. Defer to the
             // next runloop tick, where the binding write propagates.
             DispatchQueue.main.async { [weak textView] in
-                textView?.replaceCurrentToken(with: replacement)
+                guard let range else { return }
+                textView?.replaceCurrentCompletion(with: replacement, in: range)
             }
         }
         if textView.appliedFocusRequest != focusRequest {
@@ -259,14 +326,14 @@ struct ReminderInputView: NSViewRepresentable {
         }
 
         func textDidChange(_ notification: Notification) {
-            guard let textView = notification.object as? NSTextView else { return }
+            guard let textView = notification.object as? EnterSubmitTextView else { return }
             parent.text = textView.string
-            (textView as? EnterSubmitTextView).map { parent.onTokenChange?($0.currentToken()) }
+            parent.onTokenChange?(textView.currentCompletionContext())
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let textView = notification.object as? EnterSubmitTextView else { return }
-            parent.onTokenChange?(textView.currentToken())
+            parent.onTokenChange?(textView.currentCompletionContext())
         }
     }
 }

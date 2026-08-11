@@ -4,9 +4,10 @@ import Foundation
 struct ParsedReminder: Equatable {
     /// Title after all tokens stripped, whitespace-collapsed.
     var title: String
-    /// Raw text after `@` (no `@`); nil if none.
+    /// Matched list name (no `@`); nil when no list matched. An unmatched
+    /// `@phrase` is handled by the location pass or stays in the title.
     var listToken: String?
-    /// False → unmatched-list warning + keep-in-title toggle.
+    /// True iff `listToken` matched a real list.
     var listMatched: Bool
     /// Absolute due date after rollover; nil if none.
     var dueDate: Date?
@@ -18,6 +19,8 @@ struct ParsedReminder: Equatable {
     var locationPhrase: String?
     /// `#tag` tokens (whitespace-delimited, no `#`), in order, deduped.
     var tags: [String] = []
+    /// Parser warnings and validation diagnostics for the final title.
+    var diagnostics: [ParserDiagnostic] = []
     /// True when the title is empty after parsing.
     var isInvalid: Bool
     /// The original input line.
@@ -31,6 +34,7 @@ struct ParsedReminder: Equatable {
         self.hasTime = false
         self.priority = 0
         self.locationPhrase = nil
+        self.diagnostics = []
         self.isInvalid = false
         self.original = original
     }
@@ -39,7 +43,7 @@ struct ParsedReminder: Equatable {
 /// Pure natural-language reminder parser (no EventKit). List matching takes
 /// list titles as an argument so the parser is fully unit-testable.
 ///
-/// Extraction order matters: priority → list → date → location → title.
+/// Extraction order matters: priority → list → tags → date → location → title.
 enum NaturalLanguageParser {
 
     static func parse(_ line: String, now: Date = Date(), calendar: Calendar = .current, listNames: [String] = []) -> ParsedReminder {
@@ -66,13 +70,20 @@ enum NaturalLanguageParser {
         result.hasTime = date.hasTime
         text = date.text
 
-        let location = extractLocation(from: text)
+        let location = extractLocation(from: text, unmatchedListCandidate: list.unmatchedCandidate)
         result.locationPhrase = location.phrase
         text = location.text
 
         let title = collapseWhitespace(text)
         result.title = title
         result.isInvalid = title.isEmpty
+        if result.isInvalid {
+            result.diagnostics.append(.emptyTitle)
+        }
+        if let candidate = list.unmatchedCandidate,
+           containsUnmatchedListCandidate(candidate, in: title) {
+            result.diagnostics.append(.unmatchedList(candidate))
+        }
         return result
     }
 
@@ -132,12 +143,12 @@ enum NaturalLanguageParser {
 
     private static let listRegex = try! NSRegularExpression(pattern: #"(?:^|\s)@([^\s@]+)"#)
 
-    private static func extractList(from input: String, listNames: [String]) -> (token: String?, matched: Bool, text: String) {
+    private static func extractList(from input: String, listNames: [String]) -> (token: String?, matched: Bool, unmatchedCandidate: String?, text: String) {
         var text = input
         let nsText = text as NSString
         let fullRange = NSRange(location: 0, length: nsText.length)
         guard let res = listRegex.firstMatch(in: text, options: [], range: fullRange) else {
-            return (nil, false, text)
+            return (nil, false, nil, text)
         }
         let firstWord = nsText.substring(with: res.range(at: 1))
 
@@ -167,14 +178,16 @@ enum NaturalLanguageParser {
             matched = true
             stripLength = res.range.length
         } else {
-            token = firstWord
-            matched = false
-            stripLength = res.range.length
+            // Unmatched @token: leave the @ phrase in the text so the location
+            // pass can treat it as a location ("buy milk @the office"). A line
+            // that is only "@phrase" keeps the old unmatched-list shape
+            // ("@unknown list task" stays a title) — see extractLocation.
+            return (nil, false, firstWord, text)
         }
 
         let stripRange = NSRange(location: res.range.location, length: stripLength)
         text.removeSubrange(nsRangeToRange(stripRange, in: text))
-        return (token, matched, text)
+        return (token, matched, nil, text)
     }
 
     private static func listToken(_ token: String, matches listNames: [String]) -> Bool {
@@ -203,6 +216,87 @@ enum NaturalLanguageParser {
     static func containsTag(_ tag: String, in input: String) -> Bool {
         extractTags(from: input).contains { $0.lowercased() == tag.lowercased() }
     }
+
+    /// Canonical visible tag used to mark a reminder as ongoing.
+    static let ongoingTag = "ongoing"
+
+    /// True when either title or notes contains the exact ongoing tag token.
+    static func isOngoing(title: String?, notes: String?) -> Bool {
+        let text = [title, notes].compactMap { $0 }.joined(separator: "\n")
+        return containsTag(ongoingTag, in: text)
+    }
+
+    /// Removes exact tag tokens from `input`, preserving all other text and
+    /// line breaks. Tag punctuation follows the same grammar as
+    /// ``extractTags(from:)``.
+    static func removingTag(_ tag: String, from input: String) -> String {
+        let normalizedTag = tag.hasPrefix("#") ? String(tag.dropFirst()) : tag
+        let punctuation = CharacterSet(charactersIn: ",.;:!?")
+        guard !normalizedTag.isEmpty else { return input }
+
+        var lines: [String] = []
+        for originalLine in input.components(separatedBy: "\n") {
+            var line = originalLine
+            var ranges: [Range<String.Index>] = []
+            var tokenStart: String.Index?
+
+            func inspectToken(through tokenEnd: String.Index) {
+                guard let tokenStart else { return }
+                let token = String(line[tokenStart..<tokenEnd])
+                guard token.hasPrefix("#"), token.count > 1 else { return }
+                let name = String(token.dropFirst()).trimmingCharacters(in: punctuation)
+                guard name.caseInsensitiveCompare(normalizedTag) == .orderedSame else { return }
+
+                var removalEnd = tokenEnd
+                while removalEnd < line.endIndex, line[removalEnd].isWhitespace {
+                    removalEnd = line.index(after: removalEnd)
+                }
+                ranges.append(tokenStart..<removalEnd)
+            }
+
+            for index in line.indices {
+                if line[index].isWhitespace {
+                    if tokenStart != nil {
+                        inspectToken(through: index)
+                    }
+                    tokenStart = nil
+                } else if tokenStart == nil {
+                    tokenStart = index
+                }
+            }
+            if tokenStart != nil {
+                inspectToken(through: line.endIndex)
+            }
+
+            for range in ranges.reversed() {
+                line.removeSubrange(range)
+            }
+            if !ranges.isEmpty {
+                line = line.trimmingCharacters(in: .whitespaces)
+                if line.isEmpty { continue }
+            }
+            lines.append(line)
+        }
+        return lines.joined(separator: "\n")
+    }
+    /// Replaces exact whitespace-delimited tag tokens while preserving
+    /// punctuation and line breaks.
+    static func replacingTag(_ tag: String, with replacement: String, in input: String) -> String {
+        let old = tag.hasPrefix("#") ? String(tag.dropFirst()) : tag
+        let new = replacement.hasPrefix("#") ? String(replacement.dropFirst()) : replacement
+        guard !old.isEmpty, !new.isEmpty, !new.contains(where: { $0.isWhitespace }) else { return input }
+        let pattern = #"(^|\s)#"# + NSRegularExpression.escapedPattern(for: old) + #"(?=\s|$|[,.;:!?])"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return input }
+        let safeReplacement = new
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "$", with: "\\$")
+        let range = NSRange(location: 0, length: (input as NSString).length)
+        return regex.stringByReplacingMatches(in: input,
+                                              options: [],
+                                              range: range,
+                                              withTemplate: "$1#\(safeReplacement)")
+    }
+
 
     // MARK: - Pass 4: Date
 
@@ -509,9 +603,16 @@ enum NaturalLanguageParser {
     private static let trailingAtRegex = try! NSRegularExpression(
         pattern: #"(?:^|\s)(at)\s+(.+)$"#,
         options: [.caseInsensitive])
+    /// Unmatched `@` left in the text by the list pass ("buy milk @the office").
+    private static let trailingAtSignRegex = try! NSRegularExpression(
+        pattern: #"(?:^|\s)@\s*(.+)$"#,
+        options: [.caseInsensitive])
     private static let placeConnectors: Set<String> = ["at", "near"]
 
-    private static func extractLocation(from input: String) -> (phrase: String?, text: String) {
+    private static func extractLocation(from input: String, unmatchedListCandidate: String?) -> (phrase: String?, text: String) {
+        // The list pass carries this candidate through the location pass. The
+        // final title, rather than the presence of an `@`, determines whether
+        // a warning is emitted after this pass has had a chance to consume it.
         var text = input
         let nsText = text as NSString
         let fullRange = NSRange(location: 0, length: nsText.length)
@@ -534,6 +635,30 @@ enum NaturalLanguageParser {
                 return (phrase, text)
             }
         }
+
+        if let res = trailingAtSignRegex.firstMatch(in: text, options: [], range: fullRange) {
+            // Only when other words precede the @ ("buy milk @the office"): a
+            // line that is just "@phrase" stays a title (unmatched-list
+            // fallback, e.g. "@unknown list task").
+            let prefix = nsText.substring(to: res.range.location)
+            guard prefix.rangeOfCharacter(from: CharacterSet.whitespacesAndNewlines.inverted) != nil else {
+                return (nil, text)
+            }
+            let raw = nsText.substring(with: res.range(at: 1))
+            if let candidate = unmatchedListCandidate {
+                let firstWord = raw.split(whereSeparator: { $0.isWhitespace }).first.map(String.init) ?? ""
+                guard normalize(firstWord) == normalize(candidate) else {
+                    return (nil, text)
+                }
+            }
+            let phrase = raw
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: ",.;"))
+            if phrase.count >= 3, phrase.rangeOfCharacter(from: .letters) != nil {
+                text.removeSubrange(nsRangeToRange(res.range, in: text))
+                return (phrase, text)
+            }
+        }
         return (nil, text)
     }
 
@@ -543,6 +668,15 @@ enum NaturalLanguageParser {
         s.lowercased()
             .split(whereSeparator: { $0.isWhitespace })
             .joined(separator: " ")
+    }
+    private static func containsUnmatchedListCandidate(_ candidate: String, in title: String) -> Bool {
+        let escaped = NSRegularExpression.escapedPattern(for: candidate)
+        let pattern = #"(?:^|\s)@"# + escaped + #"(?=\s|$|[.,;:!?])"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return false
+        }
+        let range = NSRange(location: 0, length: (title as NSString).length)
+        return regex.firstMatch(in: title, options: [], range: range) != nil
     }
 
     private static func collapseWhitespace(_ s: String) -> String {

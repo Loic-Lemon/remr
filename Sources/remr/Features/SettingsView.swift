@@ -9,6 +9,7 @@ import SwiftUI
 /// for anything invalid; nothing persists until every draft is valid.
 struct SettingsView: View {
     @EnvironmentObject var settings: SettingsStore
+    @Environment(\.colorScheme) private var inheritedColorScheme
 
     /// Called by the inline "Back" button when Settings is rendered inside the
     /// main popover (MainView). nil in the standalone ⌘, Settings scene.
@@ -29,44 +30,63 @@ struct SettingsView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                HStack {
-                    Text("Settings")
-                        .font(.headline)
-                    Spacer()
-                    if let onClose {
-                        Button {
-                            onClose()
-                        } label: {
-                            Image(systemName: "chevron.backward")
-                                .font(.system(size: 14))
-                                .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                        .help("Back to reminders")
-                    }
-                }
-
-                Text("Keyboard")
-                    .font(.caption.bold())
+            LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                Text("Theme changes apply immediately. Shortcut edits are saved when you press Save.")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
-                    .textCase(.uppercase)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                    .padding(.bottom, 4)
 
-                ForEach(BindableAction.allCases) { action in
-                    bindingRow(for: action)
+                Section {
+                    Picker("Theme", selection: Binding(
+                        get: { settings.appearance },
+                        set: { settings.setAppearance($0) }
+                    )) {
+                        ForEach(AppearanceMode.allCases) { mode in
+                            Text(mode.label).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityLabel("Appearance")
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    .padding(.bottom, 16)
+                } header: {
+                    settingsSubheading("Appearance")
                 }
 
-                if let error = settings.errorMessage {
-                    Text(error)
-                        .font(.caption)
-                        .foregroundStyle(.red)
+                Section {
+                    VStack(alignment: .leading, spacing: 18) {
+                        ForEach(BindableAction.allCases) { action in
+                            bindingRow(for: action)
+                        }
+
+                        if let error = settings.errorMessage {
+                            Text(error)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    .padding(.bottom, 16)
+                    .background {
+                        if capture != nil {
+                            KeyRecorder(onElement: commit(_:), onCancel: cancelCapture)
+                        }
+                    }
+                } header: {
+                    settingsSubheading("Keyboard")
                 }
 
                 HStack {
                     Button("Save") {
                         save()
                     }
-                    .buttonStyle(.borderedProminent)
+                    .liquidGlassButtonStyle(.borderedProminent, prominent: true)
                     .controlSize(.small)
                     .disabled(drafts.isEmpty)
 
@@ -80,20 +100,80 @@ struct SettingsView: View {
                     .foregroundStyle(Color.accentColor)
                     .font(.callout)
                 }
-            }
-            .padding(16)
-            .background {
-                if capture != nil {
-                    KeyRecorder(onElement: commit(_:), onCancel: cancelCapture)
-                }
+                .padding(16)
             }
         }
-        .frame(width: 360, height: 460)
-        .preferredColorScheme(.light)
+        .scrollIndicators(.hidden)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            settingsHeading
+        }
+        .padding(8)
+        // Fill the whole popover pane when inline (MainView); the standalone
+        // ⌘, Settings scene gets its system-proposed size, never smaller than
+        // the previous fixed frame.
+        .frame(minWidth: 360, minHeight: 460)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Keep the theme local to this view hierarchy. Unlike
+        // preferredColorScheme, this does not reconfigure the presentation or
+        // replace the inline Settings view when the picker changes.
+        .environment(\.colorScheme, settings.appearance.colorScheme ?? inheritedColorScheme)
         .onDisappear {
             capture = nil
             settings.isCapturing = false
         }
+    }
+
+    private var settingsHeading: some View {
+        HStack {
+            Text("Settings")
+                .font(.headline)
+            Spacer()
+            if let onClose {
+                Button {
+                    onClose()
+                } label: {
+                    Label("Back", systemImage: "chevron.backward")
+                        .font(.callout.weight(.medium))
+                }
+                .liquidGlassButtonStyle(.bordered)
+                .controlSize(.small)
+                .accessibilityLabel("Back to reminders")
+                .help("Back to reminders")
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background { settingsHeaderBackdrop }
+        .zIndex(1)
+    }
+
+    /// Translucent glass keeps scrolled text from showing through the pinned
+    /// labels without painting an opaque panel over the popover surface.
+    @ViewBuilder
+    private var settingsHeaderBackdrop: some View {
+        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
+        if #available(macOS 26.0, *) {
+            shape
+                .fill(.clear)
+                .glassEffect(.regular.tint(AppPalette.controlTint), in: shape)
+        } else {
+            shape
+                .fill(.ultraThinMaterial)
+        }
+    }
+
+    /// Compact pinned chrome shared by every settings subsection. Keeping the
+    /// subsection title separate from the fixed page title prevents overlap.
+    private func settingsSubheading(_ title: String) -> some View {
+        Text(title)
+            .font(.caption.bold())
+            .foregroundStyle(.secondary)
+            .textCase(.uppercase)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 6)
+            .background { settingsHeaderBackdrop }
+            .zIndex(1)
     }
 
     // MARK: - Binding row
@@ -164,8 +244,7 @@ struct SettingsView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .background(RoundedRectangle(cornerRadius: 5).fill(AppPalette.fieldFill))
-        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(AppPalette.fieldStroke, lineWidth: 1))
+        .liquidGlassKeycap()
     }
 
     // MARK: - Capture

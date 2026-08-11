@@ -49,6 +49,23 @@ final class TagStore: ObservableObject {
         overrides[tag.lowercased()] = Self.clamp(paletteIndex)
         defaults.set(overrides, forKey: overrideKey)
     }
+    /// Move a tag's custom color when the tag is renamed.
+    func renameTag(_ tag: String, to replacement: String) {
+        let old = tag.lowercased()
+        let new = replacement.lowercased()
+        guard !old.isEmpty, !new.isEmpty, old != new else { return }
+        if overrides[new] == nil, let index = overrides[old] {
+            overrides[new] = index
+        }
+        overrides[old] = nil
+        defaults.set(overrides, forKey: overrideKey)
+    }
+
+    /// Drop local color metadata after a tag is removed from reminders.
+    func removeTag(_ tag: String) {
+        overrides[tag.lowercased()] = nil
+        defaults.set(overrides, forKey: overrideKey)
+    }
 
     static func colorName(_ index: Int) -> String {
         names[index % names.count]

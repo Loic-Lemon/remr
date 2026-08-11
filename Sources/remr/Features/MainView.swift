@@ -2,12 +2,6 @@ import AppKit
 import EventKit
 import SwiftUI
 
-enum ReminderSection: String, CaseIterable {
-    case overdue = "OVERDUE"
-    case today = "TODAY"
-    case later = "LATER"
-}
-
 /// The single-page popover: add a reminder on top, search below it,
 /// and the unified reminder list beneath that.
 struct MainView: View {
@@ -16,16 +10,37 @@ struct MainView: View {
     @ObservedObject private var filterStore = FilterStore.shared
     @State private var searchText = ""
     @State private var showGuide = false
+    @State private var showRecovery = false
     @State private var showSettings = false
-    @State private var completedToast: String?
-    @State private var toastTask: Task<Void, Never>?
-    /// Both tabs collapse until clicked ("should not show by default").
-    @State private var showRecentlyCompleted = false
-    @State private var showRecentlyDeleted = false
+    @State private var bulkInput: String?
+    @State private var editingReminder: EKReminder?
+    @State private var snoozingReminder: EKReminder?
+    @State private var snoozeShowingPicker = false
+    @State private var confirmDeleteForever = false
+    @State private var pendingDeleteForever: DeletedReminder?
+    @State private var actionToast: ActionToastState?
+    @State private var actionToastTask: Task<Void, Never>?
+
+    private struct ActionToastState {
+        let message: String
+        let actionTitle: String?
+        let action: (() -> Void)?
+        let duration: TimeInterval
+    }
+
+    private enum UndoEntry {
+        case completion(reminderID: String, wasCompleted: Bool)
+        case deletion(snapshot: DeletedReminder)
+    }
+
+    @State private var undoEntry: UndoEntry?
+    @State private var knownReminderIDs: Set<String> = []
 
     // Keyboard-first navigation (plan Step 4).
     @State private var selection: NavigableRow?
     @State private var titleFocusRequest = 0
+    @State private var showTagFilter = false
+    @State private var showTagManager = false
     @State private var notesFocusRequest = 0
     @FocusState private var searchFocused: Bool
     @State private var monitor: Any?                 // NSEvent local monitor token
@@ -33,6 +48,15 @@ struct MainView: View {
     @State private var scrollProxy: ScrollViewProxy?
     /// Keys currently held down (canonical codes) — the live chord being matched.
     @State private var heldKeys: Set<UInt16> = []
+
+    /// Whether the composer currently shows description/parse content. Drives
+    /// the slide animation of the composer layer over the fixed list layer.
+    @State private var composerExpanded = false
+
+    /// Height of the collapsed composer block (editor + search row), reserved
+    /// in the fixed list layer so expansion overlays the list instead of
+    /// pushing it down.
+    @State private var reservedTopHeight: CGFloat = 0
     /// The exact chord that last fired an action; nil = nothing fired yet.
     @State private var firedKeys: Set<UInt16>?
 
@@ -68,11 +92,23 @@ struct MainView: View {
         return byTag.filter { SearchParser.matches($0, query: query, calendarTitles: titles) }
     }
 
-    /// Items not in overdue or today — belongs in LATER.
-    private var laterItems: [EKReminder] {
-        let overdueIDs = Set(store.overdue.map(\.calendarItemIdentifier))
-        let todayIDs = Set(store.today.map(\.calendarItemIdentifier))
-        return allItems.filter { !overdueIDs.contains($0.calendarItemIdentifier) && !todayIDs.contains($0.calendarItemIdentifier) }
+    /// Every incomplete reminder bucketed into the pinned ongoing section or
+    /// chronological sections; tag filter applied per section, empty sections
+    /// dropped.
+    private var sections: [(ReminderSection, [EKReminder])] {
+        let bounds = ReminderSection.bounds()
+        var grouped: [ReminderSection: [EKReminder]] = [:]
+        for item in allItems {
+            let due = item.dueDateComponents.flatMap { Calendar.current.date(from: $0) }
+            grouped[ReminderSection.section(for: due,
+                                            ongoing: NaturalLanguageParser.isOngoing(title: item.title,
+                                                                                     notes: item.notes),
+                                            bounds: bounds), default: []].append(item)
+        }
+        return ReminderSection.allCases.compactMap { section in
+            let items = filtered(grouped[section] ?? [])
+            return items.isEmpty ? nil : (section, items)
+        }
     }
 
     private var isSearching: Bool {
@@ -84,22 +120,20 @@ struct MainView: View {
         TagStore.shared.color(for: activeFilter ?? "")
     }
 
+    /// Every tag currently found in reminders (lowercased, sorted) — the tag
+    /// dropdown's list.
+    private var allTags: [String] {
+        store.allTags()
+    }
+
     private var emptyStateText: String {
         if isSearching { return "No reminders match" }
         if let activeFilter { return "No reminders with #\(activeFilter)" }
         return "All caught up"
     }
 
-    private var sections: [(ReminderSection, [EKReminder])] {
-        ReminderSection.allCases.compactMap { section in
-            let items: [EKReminder]
-            switch section {
-            case .overdue: items = filtered(store.overdue)
-            case .today: items = filtered(store.today)
-            case .later: items = filtered(laterItems)
-            }
-            return items.isEmpty ? nil : (section, items)
-        }
+    private var reminderIDs: Set<String> {
+        Set((store.allReminders + store.completedReminders).map(\.calendarItemIdentifier))
     }
 
     /// The flat navigable order, mirroring listArea's render order exactly,
@@ -108,10 +142,10 @@ struct MainView: View {
         ListNavigation.rows(sections: sections,
                             filtered: filteredItems,
                             isSearching: isSearching,
-                            completed: store.completedReminders,
-                            showCompleted: showRecentlyCompleted,
-                            deleted: store.recentlyDeleted,
-                            showDeleted: showRecentlyDeleted,
+                            completed: [],
+                            showCompleted: false,
+                            deleted: [],
+                            showDeleted: false,
                             hidesTabs: isFiltering)
     }
 
@@ -119,46 +153,82 @@ struct MainView: View {
         Group {
             if showSettings {
                 SettingsView(onClose: { showSettings = false })
+            } else if let editingReminder {
+                ReminderEditView(reminder: editingReminder,
+                                 onCancel: { self.editingReminder = nil },
+                                 onSaved: { identifier in
+                                     self.undoEntry = nil
+                                     self.selection = .reminder(identifier)
+                                     self.editingReminder = nil
+                                     showActionToast(message: "Saved reminder", duration: 2.5)
+                                 })
+            } else if let bulkInput {
+                BulkReminderPreview(text: bulkInput,
+                                     onCancel: { self.bulkInput = nil },
+                                     onDone: {
+                                         self.bulkInput = nil
+                                         self.undoEntry = nil
+                                     })
             } else {
                 VStack(spacing: 0) {
-                    NewReminderView(titleFocusRequest: titleFocusRequest,
-                                    notesFocusRequestExternal: notesFocusRequest,
-                                    onTabForward: { searchFocused = true },
-                                    onTabBackFromTitle: { execute(.enterListMode) },
-                                    onEscape: handleEscape)
-                    searchRow
-                    Divider()
-                    listArea
+                    // The composer expands over the list instead of pushing it:
+                    // the list layer stays fixed (reserving the collapsed top
+                    // block height), while the composer layer slides down over
+                    // it, its glass surface covering the items beneath.
+                    ZStack(alignment: .top) {
+                        VStack(spacing: 0) {
+                            Color.clear.frame(height: reservedTopHeight)
+                            Divider()
+                            listArea
+                        }
+                        VStack(spacing: 0) {
+                            VStack(spacing: 0) {
+                                NewReminderView(titleFocusRequest: titleFocusRequest,
+                                                notesFocusRequestExternal: notesFocusRequest,
+                                                onTabForward: { searchFocused = true },
+                                                onTabBackFromTitle: { execute(.enterListMode) },
+                                                onEscape: handleEscape,
+                                                onBulkPreview: {
+                                                    self.undoEntry = nil
+                                                    self.bulkInput = $0
+                                                },
+                                                onEntryPresenceChange: { composerExpanded = $0 })
+                                searchRow
+                            }
+                            .background(
+                                GeometryReader { geo in
+                                    Color.clear.preference(key: TopBlockHeightKey.self,
+                                                           value: geo.size.height)
+                                }
+                            )
+                            Color.clear
+                                .frame(maxHeight: .infinity)
+                                .allowsHitTesting(false)
+                        }
+                        .animation(.easeInOut(duration: 0.2), value: composerExpanded)
+                    }
+                    .onPreferenceChange(TopBlockHeightKey.self) { height in
+                        // Reserved space tracks the collapsed height: the first
+                        // report (before any expansion) is the collapsed layout,
+                        // and expansions only ever grow from there.
+                        if reservedTopHeight == 0 || height < reservedTopHeight {
+                            reservedTopHeight = height
+                        }
+                    }
                 }
             }
         }
         .onAppear {
-            // The WindowProbe background is authoritative (fires with the real
-            // popover window) and must not be overwritten by a stale keyWindow
-            // (e.g. the standalone Settings window being key).
             if popoverWindow == nil { popoverWindow = NSApp.keyWindow }
             monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { event in
-                // MainView is a struct; capture its value copy — @State/@FocusState
-                // setters are nonmutating, so mutations reach shared storage.
-                // While the settings recorder is capturing, defer every event so
-                // the recorder's own (later-registered) monitor sees them first.
-                // NSApp.keyWindow is still nil when onAppear runs (the popover
-                // window is only made key after show()), so the window identity
-                // comes from the WindowProbe background; self-heal any leftover
-                // nil from the first key event of the session.
-                if settings.isCapturing { return event }                     // while capturing, defer to the recorder's monitor
-                // The inline Settings view replaces this whole pane, but the
-                // monitor stays installed (it lives on the Group); routing keys
-                // here would fire list actions against the hidden list (Enter
-                // completes a reminder, ⌫ deletes one, Esc closes the popover).
-                if showSettings { return event }
+                if settings.isCapturing { return event }
+                if showSettings || editingReminder != nil || bulkInput != nil || snoozingReminder != nil {
+                    return event
+                }
                 guard let eventWindow = event.window else { return event }
                 if popoverWindow == nil { popoverWindow = eventWindow }
-                guard eventWindow === popoverWindow else { return event }   // only route the main popover's keys
+                guard eventWindow === popoverWindow else { return event }
                 if event.type == .flagsChanged {
-                    // Modifier presses arrive as flagsChanged, never keyDown — sync
-                    // heldKeys with the current modifier state (canonical codes) so
-                    // modifier chords like ⌘F match when the plain key lands.
                     let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
                     if flags.contains(.command) { heldKeys.insert(ModifierKey.command.keyCode) } else { heldKeys.remove(ModifierKey.command.keyCode) }
                     if flags.contains(.shift) { heldKeys.insert(ModifierKey.shift.keyCode) } else { heldKeys.remove(ModifierKey.shift.keyCode) }
@@ -168,6 +238,11 @@ struct MainView: View {
                     return event
                 }
                 let firstResponder = popoverWindow?.firstResponder
+                let selectedReminder: EKReminder? = {
+                    guard case .reminder(let id) = selection else { return nil }
+                    return (store.allReminders + store.completedReminders)
+                        .first { $0.calendarItemIdentifier == id }
+                }()
                 let ctx = KeyboardContext(
                     textFieldFocused: firstResponder is EnterSubmitTextView,
                     searchFieldFocused: firstResponder is NSTextField,
@@ -176,7 +251,10 @@ struct MainView: View {
                         return false
                     }(),
                     hasSelection: selection != nil,
-                    searchHasText: !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    searchHasText: !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                    selectionIsReminder: selectedReminder != nil,
+                    selectionIsCompleted: selectedReminder?.isCompleted ?? false,
+                    hasUndo: undoEntry != nil
                 )
                 if event.type == .keyUp {
                     let canonical = ModifierKey.canonicalKeyCode(for: event.keyCode) ?? event.keyCode
@@ -188,14 +266,7 @@ struct MainView: View {
                 let canonical = ModifierKey.canonicalKeyCode(for: event.keyCode) ?? event.keyCode
                 heldKeys.insert(canonical)
                 syncModifiers(from: event.modifierFlags)
-                // Swallow repeats of an already-fired chord so holding a key
-                // doesn't re-fire the action; unfired repeats route as before.
                 if event.isARepeat && heldKeys == firedKeys { return nil }
-                // Shift+Tab with a text field focused: let the text view handle
-                // it (insertBacktab → onFocusBack) so Shift+Tab walks backwards
-                // (notes → title → list mode). The router maps this case to
-                // .focusSearch, which would skip the backwards step entirely
-                // (the onFocusBack wiring in NewReminderView is dead otherwise).
                 if event.keyCode == 48, heldKeys.contains(ModifierKey.shift.keyCode),
                    firstResponder is EnterSubmitTextView {
                     firedKeys = heldKeys
@@ -213,6 +284,12 @@ struct MainView: View {
                 }
             }
         }
+        .onChange(of: reminderIDs) { ids in
+            if !knownReminderIDs.isEmpty && !ids.isSubset(of: knownReminderIDs) {
+                undoEntry = nil
+            }
+            knownReminderIDs = ids
+        }
         .onDisappear {
             if let monitor { NSEvent.removeMonitor(monitor) }
             monitor = nil
@@ -220,8 +297,23 @@ struct MainView: View {
             popoverWindow = nil
             heldKeys = []
             firedKeys = nil
+            actionToastTask?.cancel()
         }
         .background(WindowProbe { popoverWindow = $0 })
+        .confirmationDialog("Delete Forever?", isPresented: $confirmDeleteForever,
+                            titleVisibility: .visible) {
+            Button("Delete Forever", role: .destructive) {
+                guard let deleted = pendingDeleteForever else { return }
+                store.deleteForever(deleted)
+                pendingDeleteForever = nil
+                undoEntry = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingDeleteForever = nil
+            }
+        } message: {
+            Text("This cannot be undone.")
+        }
     }
 
     /// Search field (gray rounded capsule) + the (i) guide button.
@@ -248,8 +340,14 @@ struct MainView: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .background(RoundedRectangle(cornerRadius: 7).fill(AppPalette.fieldFill))
-            .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(AppPalette.fieldStroke, lineWidth: 1))
+            .liquidGlassField()
+            TagFilterMenu(allTags: allTags,
+                          isPresented: $showTagFilter,
+                          onManage: { showTagManager = true })
+            .popover(isPresented: $showTagManager, arrowEdge: .bottom) {
+                TagManagerView()
+                    .environmentObject(store)
+            }
 
             if let activeFilter {
                 HStack(spacing: 4) {
@@ -268,13 +366,42 @@ struct MainView: View {
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
-                .background(Capsule().fill(filterColor.opacity(0.16)))
-                .overlay(Capsule().strokeBorder(filterColor.opacity(0.45), lineWidth: 1))
+                .liquidGlassCapsule(tint: filterColor)
                 .help("Filtered by #\(activeFilter)")
             }
+            Button {
+                showRecovery.toggle()
+            } label: {
+                Image(systemName: "archivebox")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Recently completed and deleted")
+            .background {
+                FastPopoverPresenter(
+                    isPresented: showRecovery,
+                    content: AnyView(
+                        RecoveryPopoverView(
+                            onClose: { showRecovery = false },
+                            onToggleCompletion: performToggleCompletion,
+                            onDelete: performDelete,
+                            onEdit: { editingReminder = $0 },
+                            onDuplicate: duplicateReminder,
+                            onMoveToList: moveReminder,
+                            onCopyTitle: copyReminderTitle,
+                            onRestored: handleRestored,
+                            onDeletedForever: handleDeletedForever
+                        )
+                        .environmentObject(store)
+                    ),
+                    onDismiss: { showRecovery = false }
+                )
+            }
+
 
             Button {
-                showGuide = true
+                showGuide.toggle()
             } label: {
                 Image(systemName: "info.circle")
                     .font(.system(size: 14))
@@ -282,8 +409,12 @@ struct MainView: View {
             }
             .buttonStyle(.plain)
             .help("How to use remr")
-            .popover(isPresented: $showGuide, arrowEdge: .bottom) {
-                GuideView()
+            .background {
+                FastPopoverPresenter(
+                    isPresented: showGuide,
+                    content: AnyView(GuideView(onClose: { showGuide = false })),
+                    onDismiss: { showGuide = false }
+                )
             }
 
             Button {
@@ -296,9 +427,54 @@ struct MainView: View {
             .buttonStyle(.plain)
             .help("Settings")
         }
-        .padding(.horizontal, 12)
+        // One continuous glass panel with the editor above: the surface spans
+        // the full padded row (abutting the editor's glass) and full content
+        // width, so when the composer expands the search row glides down with
+        // it and reads as the same surface — blurring the list items it passes
+        // over — rather than a transparent row showing raw items through gaps.
         .padding(.top, 8)
         .padding(.bottom, 10)
+        .background(AppPalette.surfaceFill)
+        .padding(.horizontal, 12)
+        .zIndex((showTagFilter || showRecovery) ? 10 : 0)
+    }
+
+    private var syncFooter: some View {
+        TimelineView(.periodic(from: .now, by: 10)) { context in
+            Group {
+                if let lastSyncDate = store.lastSyncDate {
+                    Text(syncStatusLabel(from: lastSyncDate, now: context.date))
+                } else {
+                    Text("Updating reminders…")
+                }
+            }
+            .font(.system(size: 10))
+            .italic()
+            .foregroundStyle(.tertiary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 4)
+            .background(.ultraThinMaterial)
+        }
+    }
+
+    private func syncStatusLabel(from date: Date, now: Date) -> String {
+        let elapsed = max(0, now.timeIntervalSince(date))
+        switch elapsed {
+        case ..<10: return "Updated just now"
+        case ..<30: return "Updated moments ago"
+        case ..<60: return "Updated less than a minute ago"
+        case ..<120: return "Updated about a minute ago"
+        case ..<300: return "Updated a few minutes ago"
+        case ..<600: return "Updated about 10 minutes ago"
+        case ..<1_800: return "Updated about half an hour ago"
+        case ..<3_600: return "Updated about an hour ago"
+        case ..<7_200: return "Updated about 2 hours ago"
+        case ..<21_600: return "Updated earlier today"
+        case ..<86_400: return "Updated today"
+        case ..<172_800: return "Updated yesterday"
+        case ..<604_800: return "Updated this week"
+        default: return "Updated over a week ago"
+        }
     }
 
     private var listArea: some View {
@@ -320,9 +496,15 @@ struct MainView: View {
                         } else if isSearching {
                             ForEach(filteredItems, id: \.calendarItemIdentifier) { reminder in
                                 ReminderRowView(reminder: reminder,
-                                                isSelected: selection == .reminder(reminder.calendarItemIdentifier)) { completed in
-                                    showCompletedToast(completed.title)
-                                }
+                                                isSelected: selection == .reminder(reminder.calendarItemIdentifier),
+                                                onSelect: { selection = .reminder(reminder.calendarItemIdentifier) },
+                                                onToggleCompletion: performToggleCompletion,
+                                                onDelete: performDelete,
+                                                onEdit: { editingReminder = $0 },
+                                                onSnooze: beginSnooze,
+                                                onDuplicate: duplicateReminder,
+                                                onMoveToList: moveReminder,
+                                                onCopyTitle: copyReminderTitle)
                                 .id(rowID(.reminder(reminder.calendarItemIdentifier)))
                                 Divider()
                                     .padding(.leading, 12)
@@ -337,135 +519,237 @@ struct MainView: View {
                                     .padding(.bottom, 4)
                                 ForEach(items, id: \.calendarItemIdentifier) { reminder in
                                     ReminderRowView(reminder: reminder,
-                                                    isSelected: selection == .reminder(reminder.calendarItemIdentifier)) { completed in
-                                        showCompletedToast(completed.title)
-                                    }
+                                                    isSelected: selection == .reminder(reminder.calendarItemIdentifier),
+                                                    onSelect: { selection = .reminder(reminder.calendarItemIdentifier) },
+                                                    onToggleCompletion: performToggleCompletion,
+                                                    onDelete: performDelete,
+                                                    onEdit: { editingReminder = $0 },
+                                                    onSnooze: beginSnooze,
+                                                    onDuplicate: duplicateReminder,
+                                                    onMoveToList: moveReminder,
+                                                    onCopyTitle: copyReminderTitle)
                                     .id(rowID(.reminder(reminder.calendarItemIdentifier)))
                                 }
                                 Divider()
                                     .padding(.leading, 12)
                             }
                         }
-                        // Both tabs live outside the empty-state branch so they
-                        // pop up even when nothing else is in the list; hidden
-                        // while searching or tag-filtering.
-                        if !isSearching && !isFiltering {
-                            if !store.completedReminders.isEmpty {
-                                recentlyCompletedTab
-                            }
-                            if !store.recentlyDeleted.isEmpty {
-                                recentlyDeletedTab
-                            }
-                        }
                     }
                     .onAppear { scrollProxy = proxy }
                 }
             }
-            if let completedToast {
-                HStack(spacing: 6) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                    Text(completedToast)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                .font(.callout.weight(.medium))
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                .background(Capsule().fill(AppPalette.surface))
-                .shadow(color: .black.opacity(0.15), radius: 6, y: 2)
-                .padding(.bottom, 10)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
+            .scrollIndicators(.hidden)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                syncFooter
+            }
+            if let toast = actionToast {
+                ActionToast(message: toast.message,
+                            actionTitle: toast.actionTitle,
+                            action: toast.action)
+                    .padding(.bottom, 10)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .animation(.spring(duration: 0.3), value: completedToast)
+        .animation(.spring(duration: 0.3), value: actionToast?.message)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    /// Collapsed-by-default tab header shared by both recovery lists.
-    private func tabHeader(_ title: String, count: Int, isOpen: Bool,
-                           isSelected: Bool, toggle: @escaping () -> Void) -> some View {
-        Button {
-            withAnimation(.spring(duration: 0.3)) {
-                toggle()
-            }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: isOpen ? "chevron.down" : "chevron.right")
-                    .font(.caption2.weight(.semibold))
-                Text(title)
-                    .font(.caption.bold())
-                Spacer()
-                Text("\(count)")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            }
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background {
-                if isSelected {
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(Color.accentColor.opacity(0.16))
+        .popover(isPresented: Binding(get: { snoozingReminder != nil },
+                                      set: { presented in
+                                          if !presented { closeSnooze() }
+                                      }), arrowEdge: .bottom) {
+            if let reminder = snoozingReminder {
+                if snoozeShowingPicker {
+                    SnoozeDatePickerView(initialDate: dueDate(of: reminder) ?? defaultSnoozeDate(),
+                                         initialHasTime: hasTime(of: reminder),
+                                         onCancel: closeSnooze,
+                                         onSave: saveCustomSnooze)
+                } else {
+                    SnoozeMenu(onChoice: applySnooze,
+                               onCustom: { snoozeShowingPicker = true },
+                               onClear: { saveSnooze(reminder, until: nil, hasTime: false, label: "cleared") })
                 }
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    /// Completed reminders, newest first, capped at the 5 most recent.
-    private var recentlyCompletedTab: some View {
-        VStack(spacing: 0) {
-            tabHeader("Recently Completed", count: min(store.completedReminders.count, 5),
-                      isOpen: showRecentlyCompleted,
-                      isSelected: selection == .tabHeader(.completed)) {
-                showRecentlyCompleted.toggle()
-            }
-            .id(rowID(.tabHeader(.completed)))
-            if showRecentlyCompleted {
-                ForEach(store.completedReminders.prefix(5), id: \.calendarItemIdentifier) { reminder in
-                    ReminderRowView(reminder: reminder,
-                                    isSelected: selection == .reminder(reminder.calendarItemIdentifier)) { completed in
-                        showCompletedToast(completed.title)
-                    }
-                    .id(rowID(.reminder(reminder.calendarItemIdentifier)))
-                }
-                Divider()
-                    .padding(.leading, 12)
             }
         }
     }
 
-    /// Shadow-copied deletions, newest first, capped at the 5 most recent.
-    private var recentlyDeletedTab: some View {
-        VStack(spacing: 0) {
-            tabHeader("Recently Deleted", count: store.recentlyDeleted.count,
-                      isOpen: showRecentlyDeleted,
-                      isSelected: selection == .tabHeader(.deleted)) {
-                showRecentlyDeleted.toggle()
-            }
-            .id(rowID(.tabHeader(.deleted)))
-            if showRecentlyDeleted {
-                ForEach(store.recentlyDeleted.prefix(5)) { deleted in
-                    DeletedReminderRow(deleted: deleted,
-                                       isSelected: selection == .deleted(deleted.id))
-                        .id(rowID(.deleted(deleted.id)))
-                }
-                Divider()
-                    .padding(.leading, 12)
+
+    private func performToggleCompletion(_ reminder: EKReminder) {
+        Task { @MainActor in
+            do {
+                let result = try await store.toggleCompletion(reminder)
+                undoEntry = .completion(reminderID: reminder.calendarItemIdentifier,
+                                        wasCompleted: result.wasCompleted)
+                let verb = result.isCompleted ? "Completed" : "Restored"
+                let title = reminder.title ?? "Reminder"
+                showActionToast(message: "\(verb) \"\(title)\"",
+                                actionTitle: "Undo",
+                                action: { performUndo() },
+                                duration: 5.0)
+            } catch {
+                showActionToast(message: error.localizedDescription, duration: 2.5)
             }
         }
     }
 
-    private func showCompletedToast(_ title: String) {
-        completedToast = "Completed \"\(title)\" today"
-        toastTask?.cancel()
-        toastTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 2_500_000_000)
+    private func performDelete(_ reminder: EKReminder) {
+        Task { @MainActor in
+            do {
+                let snapshot = try await store.deleteReminder(reminder)
+                undoEntry = snapshot.map { .deletion(snapshot: $0) }
+                let undoAction: (() -> Void)? = snapshot == nil ? nil : { performUndo() }
+                let title = reminder.title ?? "Reminder"
+                showActionToast(message: "Deleted \"\(title)\"",
+                                actionTitle: snapshot == nil ? nil : "Undo",
+                                action: undoAction,
+                                duration: snapshot == nil ? 2.5 : 5.0)
+            } catch {
+                showActionToast(message: error.localizedDescription, duration: 2.5)
+            }
+        }
+    }
+    private func handleRestored(_ deleted: DeletedReminder) {
+        undoEntry = nil
+        showActionToast(message: "Restored \"\(deleted.title)\"", duration: 2.5)
+    }
+
+    private func handleDeletedForever(_ deleted: DeletedReminder) {
+        undoEntry = nil
+    }
+
+    private func copyReminderTitle(_ reminder: EKReminder) {
+        let title = reminder.title ?? ""
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(title, forType: .string)
+        showActionToast(message: "Copied title", duration: 2.0)
+    }
+
+    private func duplicateReminder(_ reminder: EKReminder) {
+        Task { @MainActor in
+            do {
+                let duplicate = try await store.duplicate(reminder)
+                selection = .reminder(duplicate.calendarItemIdentifier)
+                showActionToast(message: "Duplicated \"\(reminder.title ?? "Reminder")\"", duration: 2.5)
+            } catch {
+                showActionToast(message: error.localizedDescription, duration: 2.5)
+            }
+        }
+    }
+
+    private func moveReminder(_ reminder: EKReminder, _ calendarIdentifier: String?) {
+        let destination = calendarIdentifier.flatMap { identifier in
+            store.reminderCalendars().first { $0.calendarIdentifier == identifier }?.title
+        } ?? "Default list"
+        Task { @MainActor in
+            do {
+                try await store.moveToList(reminder, calendarIdentifier: calendarIdentifier)
+                showActionToast(message: "Moved to \(destination)", duration: 2.5)
+            } catch {
+                showActionToast(message: error.localizedDescription, duration: 2.5)
+            }
+        }
+    }
+
+
+    private func showActionToast(message: String,
+                                 actionTitle: String? = nil,
+                                 action: (() -> Void)? = nil,
+                                 duration: TimeInterval) {
+        actionToastTask?.cancel()
+        actionToast = ActionToastState(message: message,
+                                       actionTitle: actionTitle,
+                                       action: action,
+                                       duration: duration)
+        let expiresUndo = actionTitle != nil
+        actionToastTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
             guard !Task.isCancelled else { return }
-            completedToast = nil
+            actionToast = nil
+            if expiresUndo { undoEntry = nil }
         }
+    }
+
+    private func performUndo() {
+        guard let entry = undoEntry else { return }
+        undoEntry = nil
+        Task { @MainActor in
+            switch entry {
+            case .completion(let reminderID, let wasCompleted):
+                guard let reminder = store.reminder(withIdentifier: reminderID) else {
+                    showActionToast(message: "Reminder no longer exists", duration: 2.5)
+                    return
+                }
+                if reminder.isCompleted != wasCompleted {
+                    do {
+                        _ = try await store.toggleCompletion(reminder)
+                    } catch {
+                        showActionToast(message: error.localizedDescription, duration: 2.5)
+                        return
+                    }
+                }
+                let title = reminder.title ?? "Reminder"
+                showActionToast(message: "Undid \"\(title)\"", duration: 2.5)
+            case .deletion(let snapshot):
+                do {
+                    try await store.restore(snapshot)
+                    showActionToast(message: "Restored \"\(snapshot.title)\"", duration: 2.5)
+                } catch {
+                    showActionToast(message: error.localizedDescription, duration: 2.5)
+                }
+            }
+        }
+    }
+
+    private func beginSnooze(_ reminder: EKReminder) {
+        guard !reminder.isCompleted else { return }
+        snoozeShowingPicker = false
+        snoozingReminder = reminder
+    }
+
+    private func closeSnooze() {
+        snoozeShowingPicker = false
+        snoozingReminder = nil
+    }
+
+    private func applySnooze(_ choice: SnoozeChoice) {
+        guard let reminder = snoozingReminder else { return }
+        guard let result = SnoozeCalculator.date(for: choice, now: Date(), calendar: .current) else {
+            showActionToast(message: "Couldn't calculate snooze date", duration: 2.5)
+            return
+        }
+        saveSnooze(reminder, until: result.date, hasTime: result.hasTime,
+                   label: result.date.formatted(date: .abbreviated, time: .shortened))
+    }
+
+    private func saveCustomSnooze(_ date: Date?, _ hasTime: Bool) {
+        guard let reminder = snoozingReminder else { return }
+        saveSnooze(reminder, until: date, hasTime: hasTime,
+                   label: date.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "cleared")
+    }
+
+    private func saveSnooze(_ reminder: EKReminder, until date: Date?, hasTime: Bool, label: String) {
+        Task { @MainActor in
+            do {
+                try await store.snooze(reminder, until: date, hasTime: hasTime)
+                undoEntry = nil
+                closeSnooze()
+                let title = reminder.title ?? "Reminder"
+                showActionToast(message: "Snoozed \"\(title)\" until \(label)", duration: 2.5)
+            } catch {
+                showActionToast(message: error.localizedDescription, duration: 2.5)
+            }
+        }
+    }
+
+    private func defaultSnoozeDate() -> Date {
+        let calendar = Calendar.current
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: Date()) ?? Date()
+        return calendar.date(bySettingHour: 9, minute: 0, second: 0, of: tomorrow) ?? tomorrow
+    }
+    private func dueDate(of reminder: EKReminder) -> Date? {
+        reminder.dueDateComponents.flatMap { Calendar.current.date(from: $0) }
+    }
+
+    private func hasTime(of reminder: EKReminder) -> Bool {
+        reminder.dueDateComponents?.hour != nil
     }
 
     /// Stable id used by ScrollViewReader.scrollTo for a navigable row.
@@ -496,22 +780,15 @@ struct MainView: View {
         case .moveSelection(let delta):
             let rows = navRows
             guard let idx = ListNavigation.move(fromIndex: ListNavigation.selectedIndex(selection, in: rows),
-                                                by: delta, count: rows.count),
-                  idx < rows.count else { return }
+                                                by: delta, count: rows.count), idx < rows.count else { return }
             selection = rows[idx]
-            withAnimation {
-                scrollProxy?.scrollTo(rowID(rows[idx]), anchor: .center)
-            }
+            withAnimation { scrollProxy?.scrollTo(rowID(rows[idx]), anchor: .center) }
         case .scrollPage(let delta):
-            // The plan's scrollTo(_ anchor: UnitPoint) overload is macOS 14+;
-            // on the macOS 13 floor, page by anchoring to the list's ends.
             let rows = navRows
             guard let first = rows.first, let last = rows.last else { return }
-            withAnimation {
-                scrollProxy?.scrollTo(rowID(delta < 0 ? first : last), anchor: delta < 0 ? .top : .bottom)
-            }
+            withAnimation { scrollProxy?.scrollTo(rowID(delta < 0 ? first : last), anchor: delta < 0 ? .top : .bottom) }
         case .toggleHeader:
-            toggleHeader()
+            showRecovery = true
         case .clearSelection:
             selection = nil
         case .focusSearch:
@@ -530,47 +807,62 @@ struct MainView: View {
         case .activateRow:
             switch selection {
             case .reminder(let id):
-                guard let reminder = (store.allReminders + store.completedReminders).first(where: { $0.calendarItemIdentifier == id }) else { return }
-                Task { await store.toggleCompletion(reminder); if reminder.isCompleted { showCompletedToast(reminder.title) } }
+                guard let reminder = (store.allReminders + store.completedReminders)
+                    .first(where: { $0.calendarItemIdentifier == id }) else { return }
+                performToggleCompletion(reminder)
             case .deleted(let uuid):
                 guard let deleted = store.recentlyDeleted.first(where: { $0.id == uuid }) else { return }
-                Task { await store.restore(deleted) }
+                Task { @MainActor in
+                    do {
+                        try await store.restore(deleted)
+                        undoEntry = nil
+                        showActionToast(message: "Restored \"\(deleted.title)\"", duration: 2.5)
+                    } catch {
+                        showActionToast(message: error.localizedDescription, duration: 2.5)
+                    }
+                }
             case .tabHeader:
-                toggleHeader()
+                showRecovery = true
             case nil:
                 break
             }
         case .openRow:
             if case .reminder(let id) = selection,
-               let reminder = (store.allReminders + store.completedReminders).first(where: { $0.calendarItemIdentifier == id }) {
+               let reminder = (store.allReminders + store.completedReminders)
+                    .first(where: { $0.calendarItemIdentifier == id }) {
                 store.openInReminders(reminder)
             }
         case .deleteRow:
             switch selection {
             case .reminder(let id):
-                guard let reminder = (store.allReminders + store.completedReminders).first(where: { $0.calendarItemIdentifier == id }) else { return }
-                Task { await store.deleteReminder(reminder) }
+                guard let reminder = (store.allReminders + store.completedReminders)
+                    .first(where: { $0.calendarItemIdentifier == id }) else { return }
+                performDelete(reminder)
             case .deleted(let uuid):
                 guard let deleted = store.recentlyDeleted.first(where: { $0.id == uuid }) else { return }
-                store.deleteForever(deleted)
-            case .tabHeader:
-                break
-            case nil:
+                pendingDeleteForever = deleted
+                confirmDeleteForever = true
+            case .tabHeader, nil:
                 break
             }
+        case .editRow:
+            guard case .reminder(let id) = selection,
+                  let reminder = (store.allReminders + store.completedReminders)
+                    .first(where: { $0.calendarItemIdentifier == id }) else { return }
+            editingReminder = reminder
+        case .snoozeRow:
+            guard case .reminder(let id) = selection,
+                  let reminder = (store.allReminders + store.completedReminders)
+                    .first(where: { $0.calendarItemIdentifier == id }),
+                  !reminder.isCompleted else { return }
+            beginSnooze(reminder)
+        case .undo:
+            performUndo()
         }
     }
 
-    /// ←/→ (or Enter) on a selected recovery header toggles its expansion —
-    /// mirrors tabHeader's button action.
     private func toggleHeader() {
-        withAnimation(.spring(duration: 0.3)) {
-            switch selection {
-            case .tabHeader(.completed): showRecentlyCompleted.toggle()
-            case .tabHeader(.deleted): showRecentlyDeleted.toggle()
-            default: break
-            }
-        }
+        showRecovery = true
     }
 
     private func closePopover() {
@@ -584,6 +876,16 @@ struct MainView: View {
         } else {
             closePopover()
         }
+    }
+}
+
+/// Measures the height of the collapsed composer block (editor + search row).
+/// MainView reserves this space in the fixed list layer so the composer can
+/// expand over the list instead of pushing it down.
+private struct TopBlockHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 

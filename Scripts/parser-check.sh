@@ -8,6 +8,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="$(mktemp -t parser-check.XXXXXX)"
 trap 'rm -f "$BIN"' EXIT
 swiftc -o "$BIN" \
+    "$ROOT/Sources/remr/Core/Parser/ParserDiagnostic.swift" \
     "$ROOT/Sources/remr/Core/Parser/NaturalLanguageParser.swift" \
     "$ROOT/Sources/remr/Core/Parser/SearchParser.swift" \
     "$ROOT/Scripts/ParserCheckMain.swift"

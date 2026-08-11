@@ -1,6 +1,23 @@
-import CoreLocation
-import EventKit
+import Foundation
 import SwiftUI
+
+/// Single-reminder editor: the title parses due date / list / priority /
+/// location tokens; a description line appears as you type. Enter in the
+/// title moves to the description; Enter in the description creates the
+/// reminder; Shift+Enter inserts a newline in the description.
+enum SuggestionKind: Equatable {
+    case date
+    case priority
+    case list
+    case tag
+}
+
+struct SuggestionCandidate: Identifiable, Equatable {
+    let id: String
+    let label: String
+    let replacement: String
+    let kind: SuggestionKind
+}
 
 /// Single-reminder editor: the title parses due date / list / priority /
 /// location tokens; a description line appears as you type. Enter in the
@@ -8,10 +25,12 @@ import SwiftUI
 /// reminder; Shift+Enter inserts a newline in the description.
 struct NewReminderView: View {
     @EnvironmentObject var store: ReminderStore
+    @EnvironmentObject var settings: SettingsStore
     @State private var title: String
     @State private var notes = ""
     @State private var saving = false
     @State private var saveError: String?
+    @State private var parsedPreview: ParsedReminder?
     /// Bumped to move focus from the title into the description.
     @State private var notesFocusRequest = 0
     /// Bumped (with `focusedField`) to grab the title field from outside:
@@ -20,13 +39,13 @@ struct NewReminderView: View {
     /// Explicit SwiftUI focus identity — without it, macOS 26's focus system
     /// hands focus to the description the moment it appears.
     @FocusState private var focusedField: EntryField?
-    /// Keyword-suggestion dropdown: token at the title's caret, selection,
-    /// and whether the title field actually has focus.
-    @State private var completionToken = ""
+    /// Completion context at the title caret and the selected row.
+    @State private var completionContext: CompletionContext?
     @State private var selectedSuggestion = 0
     @State private var titleFocused = false
     @State private var replaceTokenRequest = 0
     @State private var replaceTokenWith = ""
+    @State private var replaceTokenRange: NSRange?
     /// External bump (MainView): focus the title field (Tab from the list,
     /// Shift+Tab from search, or popover open). Dual mechanism with
     /// `focusedField` + `titleFocusBump` — see `moveToNotes()`.
@@ -40,28 +59,33 @@ struct NewReminderView: View {
     var onTabBackFromTitle: (() -> Void)? = nil
     /// Escape while a text field owns it (dropdown already dismissed).
     var onEscape: (() -> Void)? = nil
+    /// Called when the title contains multiple reminder lines.
+    var onBulkPreview: ((String) -> Void)? = nil
+    /// Called exactly once after the submitted reminder is successfully saved.
+    /// Parsing, bulk-preview routing, and failed saves do not invoke it.
+    var onCreated: (() -> Void)? = nil
+    /// Called whenever the editor gains or loses entry content — i.e. when the
+    /// description + parse preview surfaces appear or disappear. Lets the
+    /// container animate layout around the expansion.
+    var onEntryPresenceChange: ((Bool) -> Void)? = nil
 
-    init(prefillText: String = "",
-         titleFocusRequest: Int = 0,
+    init(titleFocusRequest: Int = 0,
          notesFocusRequestExternal: Int = 0,
          onTabForward: (() -> Void)? = nil,
          onTabBackFromTitle: (() -> Void)? = nil,
-         onEscape: (() -> Void)? = nil) {
+         onEscape: (() -> Void)? = nil,
+         onBulkPreview: ((String) -> Void)? = nil,
+         onCreated: (() -> Void)? = nil,
+         onEntryPresenceChange: ((Bool) -> Void)? = nil) {
         self.titleFocusRequest = titleFocusRequest
         self.notesFocusRequestExternal = notesFocusRequestExternal
         self.onTabForward = onTabForward
         self.onTabBackFromTitle = onTabBackFromTitle
         self.onEscape = onEscape
-        // Service / global-input prefill: first line is the title, the
-        // remaining lines become the description.
-        let lines = prefillText.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        let initialTitle = lines.first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let initialNotes = lines.dropFirst()
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .joined(separator: "\n")
-        _title = State(initialValue: initialTitle)
-        _notes = State(initialValue: initialNotes)
+        self.onBulkPreview = onBulkPreview
+        self.onCreated = onCreated
+        self.onEntryPresenceChange = onEntryPresenceChange
+        _title = State(initialValue: "")
     }
 
     var body: some View {
@@ -70,8 +94,17 @@ struct NewReminderView: View {
             if titleFocused, !suggestionMatches.isEmpty {
                 suggestionDropdown
             }
-            if !title.isEmpty || !notes.isEmpty {
+            if hasEntryContent {
                 notesField
+                    .transition(entrySurfaceTransition)
+            }
+            if hasEntryContent, let parsedPreview {
+                ParsePreviewView(draft: ReminderDraft.fromParsed(
+                    parsedPreview,
+                    notes: notes,
+                    calendar: parsedPreview.listToken.flatMap { store.resolveList(token: $0).calendar }
+                ))
+                    .transition(entrySurfaceTransition)
             }
             if let saveError {
                 Text(saveError)
@@ -80,10 +113,19 @@ struct NewReminderView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 12)
                     .padding(.bottom, 6)
+                    .transition(entrySurfaceTransition)
             }
-            // The add area is part of the pane: no box, just this single
-            // full-width hairline separating it from the search row below.
-            Divider()
+            // The add area is one glass surface, so adjacent editor pieces do
+            // not draw overlapping translucent borders. Its bottom edge stays
+            // square against the search row below the input area.
+        }
+        .liquidGlassField(in: EntryContainerShape())
+        .animation(entryAnimation, value: entryAnimationKey)
+        .onChange(of: title) { _ in
+            recomputePreview()
+        }
+        .onChange(of: entryAnimationKey) { _ in
+            onEntryPresenceChange?(hasEntryContent)
         }
         .onChange(of: titleFocusRequest) { _ in
             focusedField = .title
@@ -100,8 +142,31 @@ struct NewReminderView: View {
         }
         .onAppear {
             focusedField = .title
+            recomputePreview()
         }
-        .preferredColorScheme(.light)
+    }
+
+    private func recomputePreview() {
+        let now = Date()
+        let listNames = store.reminderCalendars().map(\.title)
+        parsedPreview = NaturalLanguageParser.parse(title, now: now, calendar: .current, listNames: listNames)
+    }
+
+    private struct EntryContainerShape: Shape {
+        func path(in rect: CGRect) -> Path {
+            let radius = min(9, min(rect.width, rect.height) / 2)
+            var path = Path()
+            path.move(to: CGPoint(x: rect.minX, y: rect.maxY))
+            path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + radius))
+            path.addQuadCurve(to: CGPoint(x: rect.minX + radius, y: rect.minY),
+                              control: CGPoint(x: rect.minX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.maxX - radius, y: rect.minY))
+            path.addQuadCurve(to: CGPoint(x: rect.maxX, y: rect.minY + radius),
+                              control: CGPoint(x: rect.maxX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+            path.closeSubpath()
+            return path
+        }
     }
 
     private var titleField: some View {
@@ -109,11 +174,11 @@ struct NewReminderView: View {
             ReminderInputView(
                 text: $title, refocusOnClear: true, onMoveDown: titleReturnPressed,
                 focusRequest: titleFocusBump,
-                onTokenChange: { completionToken = $0; selectedSuggestion = 0 },
+                onTokenChange: { context in completionContext = context; selectedSuggestion = 0 },
                 onFocusChange: { titleFocused = $0 },
                 dropdownActive: titleFocused && !suggestionMatches.isEmpty,
                 onNavigate: navigateSuggestion,
-                onDismiss: { completionToken = "" },
+                onDismiss: { completionContext = nil },
                 onFocusForward: {
                     if title.isEmpty && notes.isEmpty {
                         onTabForward?()
@@ -125,7 +190,8 @@ struct NewReminderView: View {
                 onFocusBack: { onTabBackFromTitle?() },
                 onEscape: onEscape,
                 replaceTokenRequest: replaceTokenRequest,
-                replaceTokenWith: replaceTokenWith
+                replaceTokenWith: replaceTokenWith,
+                replaceTokenRange: replaceTokenRange
             )
             if title.isEmpty {
                 Text("e.g. Take out the trash before end of day @home")
@@ -140,37 +206,6 @@ struct NewReminderView: View {
         .frame(height: 32)
         .padding(.horizontal, 12)
         .padding(.top, 8)
-        .padding(.bottom, 4)
-    }
-
-    /// Keyword suggestions matching the title's current token (only fires for
-    /// letters that could start a keyword; never for `@`/`#` tokens).
-    private var suggestionMatches: [String] {
-        let token = completionToken.lowercased()
-        guard token.count >= 2, !token.hasPrefix("@"), !token.hasPrefix("#") else { return [] }
-        return Self.keywords.filter { $0.hasPrefix(token) && $0 != token }
-    }
-
-    private var suggestionDropdown: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(suggestionMatches.enumerated()), id: \.offset) { index, keyword in
-                Button {
-                    acceptSuggestion(keyword)
-                } label: {
-                    Text(keyword)
-                        .font(.system(size: 13))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(index == selectedSuggestion ? Color.accentColor.opacity(0.16) : Color.clear)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .background(RoundedRectangle(cornerRadius: 7).fill(AppPalette.fieldFill))
-        .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(AppPalette.fieldStroke, lineWidth: 1))
-        .padding(.horizontal, 12)
         .padding(.bottom, 4)
     }
 
@@ -201,6 +236,44 @@ struct NewReminderView: View {
         case notes
     }
 
+    /// True while any entry surface (description field or parse preview) is
+    /// visible. Flips only when the editor gains or loses content — never on
+    /// per-keystroke parse-preview refreshes — so it can drive the surface
+    /// expansion/collapse animation without animating every preview update.
+    private var hasEntryContent: Bool {
+        !title.isEmpty || !notes.isEmpty
+    }
+
+    /// A short, opacity-only reveal keeps the inserted NSTextView in its final
+    /// layout position while the parent glass surface animates its height.
+    /// Moving the representable during insertion makes it paint over the title
+    /// field before AppKit has completed its first layout pass.
+    private var entryAnimation: Animation {
+        .easeInOut(duration: 0.2)
+    }
+
+    private var entrySurfaceTransition: AnyTransition {
+        // Reveal via the editor's growing glass clip (the editor is clipped to
+        // `EntryContainerShape`): as the panel height animates it unveils the
+        // description and preview line-by-line, in sync with the search bar
+        // glide. `.identity` keeps the inserted NSTextView in its final layout
+        // position (no translation during AppKit's first layout pass) while the
+        // clip does the revealing.
+        .identity
+    }
+
+    /// Animation key: fires only on expansion (first text appears), collapse
+    /// (editor cleared), or a save error appearing. Parse-preview content
+    /// refreshes leave the key unchanged and therefore unanimated.
+    private var entryAnimationKey: EntryAnimationKey {
+        EntryAnimationKey(hasEntryContent: hasEntryContent, saveError: saveError)
+    }
+
+    private struct EntryAnimationKey: Equatable {
+        var hasEntryContent: Bool
+        var saveError: String?
+    }
+
     /// Grows with the description (one line ≈ 32pt, capped at ~5 lines) so a
     /// fresh box is compact instead of a tall empty slab.
     private var notesFieldHeight: CGFloat {
@@ -208,15 +281,167 @@ struct NewReminderView: View {
         return min(16 + CGFloat(lines) * 16, 96)
     }
 
-    /// Keyword completions: date keywords + priority levels the parser knows.
-    /// ("next week" / "this week" are excluded: neither the parser nor
-    /// NSDataDetector produces a due date for them, so accepting the
-    /// suggestion would silently do nothing.)
-    private static let keywords = [
+    /// Date/priority keywords followed by matching real lists and tags. The
+    /// input view supplies a UTF-16-safe range, so every candidate replaces
+    /// exactly the token that produced it.
+    private var suggestionMatches: [SuggestionCandidate] {
+        guard let context = completionContext else { return [] }
+        let token = context.text
+        guard !token.isEmpty else { return [] }
+        let lower = token.lowercased()
+        var candidates: [SuggestionCandidate] = []
+
+        if token.hasPrefix("@") {
+            let query = String(token.dropFirst()).trimmingCharacters(in: .whitespaces).lowercased()
+            guard !query.isEmpty else { return [] }
+            var seen = Set<String>()
+            for calendar in store.reminderCalendars() {
+                let title = calendar.title
+                let key = title.lowercased()
+                guard key.hasPrefix(query), seen.insert(key).inserted else { continue }
+                candidates.append(SuggestionCandidate(id: "list:\(key)", label: "@\(title)", replacement: "@\(title)", kind: .list))
+            }
+        } else if token.hasPrefix("#") {
+            let query = String(token.dropFirst()).lowercased()
+            guard !query.isEmpty else { return [] }
+            var seen = Set<String>()
+            for tag in store.allTags() {
+                let key = tag.lowercased()
+                guard key.hasPrefix(query), seen.insert(key).inserted else { continue }
+                candidates.append(SuggestionCandidate(id: "tag:\(key)", label: "#\(tag)", replacement: "#\(tag)", kind: .tag))
+            }
+        } else {
+            guard token.count >= 2 else { return [] }
+            for keyword in Self.dateKeywords where keyword.lowercased().hasPrefix(lower) && keyword.lowercased() != lower {
+                candidates.append(SuggestionCandidate(id: "date:\(keyword)", label: keyword, replacement: keyword, kind: .date))
+            }
+            for keyword in Self.priorityKeywords where keyword.lowercased().hasPrefix(lower) && keyword.lowercased() != lower {
+                candidates.append(SuggestionCandidate(id: "priority:\(keyword)", label: keyword, replacement: keyword, kind: .priority))
+            }
+        }
+        return Array(candidates.prefix(8))
+    }
+
+    private var suggestionDropdown: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                Text("Suggestions")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                Text("Return to insert")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .padding(.bottom, 6)
+
+            Divider()
+                .opacity(0.45)
+
+            VStack(spacing: 2) {
+                ForEach(Array(suggestionMatches.enumerated()), id: \.offset) { index, candidate in
+                    Button {
+                        acceptSuggestion(candidate)
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: suggestionIcon(for: candidate.kind))
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(suggestionTint(for: candidate.kind))
+                                .frame(width: 24, height: 24)
+                                .background(
+                                    suggestionTint(for: candidate.kind).opacity(0.14),
+                                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                )
+
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(candidate.label)
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                                Text(suggestionKindTitle(for: candidate.kind))
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            Spacer(minLength: 8)
+
+                            if index == selectedSuggestion {
+                                Image(systemName: "return")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background {
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(index == selectedSuggestion
+                                      ? Color.accentColor.opacity(0.15)
+                                      : Color.clear)
+                                .overlay {
+                                    if index == selectedSuggestion {
+                                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                            .strokeBorder(Color.accentColor.opacity(0.35), lineWidth: 1)
+                                    }
+                                }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(candidate.label)
+                    .accessibilityHint("Insert suggestion")
+                }
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 6)
+        }
+        .padding(.horizontal, 12)
+        .padding(.bottom, 6)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(AppPalette.controlStroke.opacity(0.7), lineWidth: 1)
+        }
+    }
+
+    private func suggestionIcon(for kind: SuggestionKind) -> String {
+        switch kind {
+        case .date: return "calendar"
+        case .priority: return "exclamationmark.circle"
+        case .list: return "list.bullet"
+        case .tag: return "number"
+        }
+    }
+
+    private func suggestionKindTitle(for kind: SuggestionKind) -> String {
+        switch kind {
+        case .date: return "Date"
+        case .priority: return "Priority"
+        case .list: return "List"
+        case .tag: return "Tag"
+        }
+    }
+
+    private func suggestionTint(for kind: SuggestionKind) -> Color {
+        switch kind {
+        case .date: return .blue
+        case .priority: return .orange
+        case .list: return .green
+        case .tag: return .purple
+        }
+    }
+
+    private static let dateKeywords = [
         "today", "tomorrow", "tonight", "later", "end of day", "eod",
         "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
-        "high", "medium", "low",
     ]
+    private static let priorityKeywords = ["high", "medium", "low"]
 
     /// Enter (or Tab while the dropdown is up): accept the highlighted
     /// suggestion, otherwise move to the description.
@@ -228,11 +453,11 @@ struct NewReminderView: View {
         }
     }
 
-    /// Replace the caret token with the chosen keyword and hide the dropdown.
-    private func acceptSuggestion(_ keyword: String) {
-        replaceTokenWith = keyword
+    private func acceptSuggestion(_ candidate: SuggestionCandidate) {
+        replaceTokenWith = candidate.replacement
+        replaceTokenRange = completionContext?.range
         replaceTokenRequest += 1
-        completionToken = ""
+        completionContext = nil
         selectedSuggestion = 0
     }
 
@@ -249,7 +474,6 @@ struct NewReminderView: View {
         focusedField = .notes
         notesFocusRequest += 1
     }
-
     /// Same semantics as pressing Return in the description: create the single
     /// reminder (or report what's wrong), clear both fields, keep focus.
     /// Title/notes are snapshotted before the async save so text typed while
@@ -257,9 +481,16 @@ struct NewReminderView: View {
     /// still holding the submitted text).
     private func submit() {
         guard !saving else { return }
+        if title.contains("\n") {
+            onBulkPreview?(title)
+            return
+        }
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        let parsed = NaturalLanguageParser.parse(trimmed, listNames: store.reminderCalendars().map(\.title))
+        let now = Date()
+        let listNames = store.reminderCalendars().map(\.title)
+        let parsed = NaturalLanguageParser.parse(trimmed, now: now, calendar: .current, listNames: listNames)
+        parsedPreview = parsed
         guard !parsed.isInvalid else {
             saveError = "No title left after parsing"
             return
@@ -278,6 +509,7 @@ struct NewReminderView: View {
         defer { saving = false }
         do {
             let locationMessage = try await createReminder(from: parsed, notes: notesAtSubmit)
+            onCreated?()
             saveError = locationMessage
             if title == titleAtSubmit { title = "" }
             if notes == notesAtSubmit { notes = "" }
@@ -288,51 +520,25 @@ struct NewReminderView: View {
     }
 
     private func createReminder(from parsed: ParsedReminder, notes notesAtSubmit: String) async throws -> String? {
-        var title = parsed.title
-        if !parsed.listMatched, let token = parsed.listToken {
-            title = "@\(token) " + title
-        }
-        var dueComponents: DateComponents?
-        if let due = parsed.dueDate {
-            var comps = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .second], from: due)
-            if !parsed.hasTime {
-                // Date-only parse → all-day reminder.
-                comps.hour = nil
-                comps.minute = nil
-                comps.second = nil
-            }
-            dueComponents = comps
-        }
-        var location: EKStructuredLocation?
+        var draft = ReminderDraft.fromParsed(parsed, notes: notesAtSubmit, calendar: parsed.listToken.flatMap { store.resolveList(token: $0).calendar })
         var saveMessage: String?
-        if let phrase = parsed.locationPhrase {
-            if let loc = await LocationGeocoder.shared.geocode(phrase) {
-                location = Self.structuredLocation(title: phrase, location: loc)
+
+        if case .unresolved(let phrase) = draft.location {
+            if let location = await LocationGeocoder.shared.geocode(phrase) {
+                draft.location = .resolved(DeletedLocation(
+                    title: phrase,
+                    latitude: location.coordinate.latitude,
+                    longitude: location.coordinate.longitude,
+                    radius: 100
+                ))
             } else {
-                title += " at \(phrase)"
-                saveMessage = "Couldn't find location \"\(phrase)\" — added it to the title"
+                draft.title += " at \(phrase)"
+                draft.location = .none
+                saveMessage = "Couldn't find location “\(phrase)” — added it to the title"
             }
         }
-        let list = store.resolveList(token: parsed.listToken ?? "")
-        // Tags persist as a trailing #-line in notes: public-API compatible,
-        // visible in Reminders.app, and matched by the existing #tag search.
-        var fullNotes = notesAtSubmit
-        if !parsed.tags.isEmpty {
-            let tagLine = parsed.tags.map { "#\($0)" }.joined(separator: " ")
-            fullNotes = [fullNotes, tagLine].filter { !$0.isEmpty }.joined(separator: "\n")
-        }
-        try await store.create(title: title, calendar: list.calendar,
-                               dueDate: dueComponents, priority: parsed.priority,
-                               location: location, notes: fullNotes.isEmpty ? nil : fullNotes)
-        return saveMessage
-    }
 
-    /// This SDK exposes only `locationWithTitle:` plus settable properties.
-    private static func structuredLocation(title: String, location: CLLocation) -> EKStructuredLocation {
-        let structured = EKStructuredLocation()
-        structured.title = title
-        structured.geoLocation = location
-        structured.radius = 100
-        return structured
+        try await store.create(from: draft)
+        return saveMessage
     }
 }

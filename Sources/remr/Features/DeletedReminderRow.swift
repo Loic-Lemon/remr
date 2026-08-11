@@ -6,31 +6,52 @@ struct DeletedReminderRow: View {
     let deleted: DeletedReminder
     /// Keyboard-selection highlight (accent fill, same as the suggestion dropdown).
     var isSelected: Bool = false
+    var onRestored: (() -> Void)? = nil
+    var onDeletedForever: (() -> Void)? = nil
+    @State private var restoreError: String?
+    @State private var confirmDeleteForever = false
 
     var body: some View {
-        HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(deleted.title)
-                    .font(.system(size: 13, weight: .medium))
-                    .lineLimit(1)
-                Text(meta)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(deleted.title)
+                        .font(.system(size: 13, weight: .medium))
+                        .lineLimit(1)
+                    Text(meta)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Restore") {
+                    Task { @MainActor in
+                        do {
+                            try await store.restore(deleted)
+                            restoreError = nil
+                            onRestored?()
+                        } catch {
+                            restoreError = error.localizedDescription
+                        }
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                Button {
+                    confirmDeleteForever = true
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Delete forever")
+            }
+            if let restoreError {
+                Text(restoreError)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.red)
+                    .lineLimit(2)
+                    .padding(.top, 4)
             }
-            Spacer()
-            Button("Restore") {
-                Task { await store.restore(deleted) }
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            Button {
-                store.deleteForever(deleted)
-            } label: {
-                Image(systemName: "trash")
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("Delete forever")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -42,6 +63,16 @@ struct DeletedReminderRow: View {
             }
         }
         .contentShape(Rectangle())
+        .confirmationDialog("Delete Forever?", isPresented: $confirmDeleteForever,
+                            titleVisibility: .visible) {
+            Button("Delete Forever", role: .destructive) {
+                store.deleteForever(deleted)
+                onDeletedForever?()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This cannot be undone.")
+        }
     }
 
     private var meta: String {

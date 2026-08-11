@@ -1,13 +1,22 @@
 import SwiftUI
 
-/// The app's light glass palette: a near-transparent popover with input and
-/// search fields that are maximally see-through, defined by a hairline
-/// outline instead of a fill.
+/// Palette for custom controls that remain below the system-provided glass
+/// surface. Materials and system colors adapt to the user's appearance.
 enum AppPalette {
-    /// Input and search field fill: just a whisper of frost.
-    static let fieldFill = AnyShapeStyle(.ultraThinMaterial.opacity(0.35))
-    /// Subtle hairline outline around fields.
-    static let fieldStroke = Color.primary.opacity(0.12)
-    /// Opaque surface for transient chrome (the completion toast).
-    static let surface = Color.white
+    /// Input and search fields use the same translucent material in both
+    /// appearances; the material itself resolves its light/dark treatment.
+    static let fieldFill = AnyShapeStyle(.ultraThinMaterial)
+    /// Subtle appearance-aware contrast for compact glass controls.
+    static let controlTint = Color.primary.opacity(0.06)
+    /// Pale appearance-aware accent for popup chrome; unlike `Color.accentColor`,
+    /// this remains a restrained neutral in both light and dark appearances.
+    static let popupAccent = Color.primary.opacity(0.48)
+    static let controlStroke = Color.primary.opacity(0.16)
+    /// Keycaps need stronger separation than ordinary fields while remaining
+    /// appearance-aware.
+    static let keycapFill = AnyShapeStyle(.thickMaterial)
+    static let keycapTint = Color.primary.opacity(0.10)
+    static let keycapStroke = Color.primary.opacity(0.28)
+    /// Translucent fallback surface for transient chrome below macOS 26.
+    static let surfaceFill = AnyShapeStyle(.regularMaterial)
 }

@@ -245,6 +245,7 @@ struct LegacyKeyCombo: Codable {
 /// is the Settings row order (global hotkey first, then list actions).
 enum BindableAction: String, CaseIterable, Identifiable {
     case togglePopover   // "Open remr from anywhere" — global Carbon hotkey
+    case quickAdd = "quickAdd" // "Quick add reminder" — global Carbon hotkey
     case focusSearch     // "Focus search"
     case moveDown        // "Move selection down"
     case moveUp          // "Move selection up"
@@ -252,17 +253,26 @@ enum BindableAction: String, CaseIterable, Identifiable {
     case pageUp          // "Move up a page"
     case scrollDown      // "Scroll down"
     case scrollUp        // "Scroll up"
-    case toggleHeader    // "Toggle recovery tab"
+    case toggleHeader    // "Open recovery"
     case activateRow     // "Complete / restore row"
     case openRow         // "Open in Reminders"
     case deleteRow       // "Delete row"
+    case editRow         // "Edit selected reminder"
+    case snoozeRow       // "Snooze selected reminder"
+    case undo            // "Undo last action"
     case closePopover    // "Close popover"
 
     var id: String { rawValue }
+    /// Whether this action is registered as a Carbon global hotkey.
+    var isGlobalHotkey: Bool {
+        self == .togglePopover || self == .quickAdd
+    }
+
 
     var label: String {
         switch self {
         case .togglePopover: return "Open remr from anywhere"
+        case .quickAdd: return "Quick add reminder"
         case .focusSearch: return "Focus search"
         case .moveDown: return "Move selection down"
         case .moveUp: return "Move selection up"
@@ -270,10 +280,13 @@ enum BindableAction: String, CaseIterable, Identifiable {
         case .pageUp: return "Move up a page"
         case .scrollDown: return "Scroll down"
         case .scrollUp: return "Scroll up"
-        case .toggleHeader: return "Toggle recovery tab"
+        case .toggleHeader: return "Open recovery"
         case .activateRow: return "Complete / restore row"
         case .openRow: return "Open in Reminders"
         case .deleteRow: return "Delete row"
+        case .editRow: return "Edit selected reminder"
+        case .snoozeRow: return "Snooze selected reminder"
+        case .undo: return "Undo last action"
         case .closePopover: return "Close popover"
         }
     }
@@ -285,18 +298,22 @@ enum DefaultBindings {
     /// Source of truth for the router's default argument and for SettingsStore merging.
     /// One chord per action; search defaults to ⌘F.
     static let all: [BindableAction: KeyCombo] = [
-        .togglePopover: KeyCombo([.modifier(.option), .modifier(.command), .key(15)]), // ⌥⌘R (kVK_ANSI_R)
-        .focusSearch:   KeyCombo([.modifier(.command), .key(3)]),                      // ⌘F (was "/")
-        .moveDown:      KeyCombo([.key(125)]),                                         // ↓
-        .moveUp:        KeyCombo([.key(126)]),                                         // ↑
-        .pageDown:      KeyCombo([.key(121)]),                                         // PageDown
-        .pageUp:        KeyCombo([.key(116)]),                                         // PageUp
-        .scrollDown:    KeyCombo([.key(49)]),                                          // Space
-        .scrollUp:      KeyCombo([.modifier(.shift), .key(49)]),                       // ⇧Space
-        .toggleHeader:  KeyCombo([.key(123)]),                                         // ←
-        .activateRow:   KeyCombo([.key(36)]),                                          // Return
-        .openRow:       KeyCombo([.modifier(.command), .key(36)]),                     // ⌘Return
-        .deleteRow:     KeyCombo([.key(51)]),                                          // ⌫
-        .closePopover:  KeyCombo([.key(53)]),                                          // Esc
+        .togglePopover: KeyCombo([.modifier(.option), .modifier(.command), .key(UInt16(kVK_ANSI_R))]), // ⌥⌘R
+        .quickAdd:      KeyCombo([.modifier(.option), .modifier(.command), .key(UInt16(kVK_ANSI_N))]), // ⌥⌘N
+        .focusSearch:   KeyCombo([.modifier(.command), .key(UInt16(kVK_ANSI_F))]),                      // ⌘F
+        .moveDown:      KeyCombo([.key(125)]),                                                         // ↓
+        .moveUp:        KeyCombo([.key(126)]),                                                         // ↑
+        .pageDown:      KeyCombo([.key(121)]),                                                         // PageDown
+        .pageUp:        KeyCombo([.key(116)]),                                                         // PageUp
+        .scrollDown:    KeyCombo([.key(49)]),                                                          // Space
+        .scrollUp:      KeyCombo([.modifier(.shift), .key(49)]),                                       // ⇧Space
+        .toggleHeader:  KeyCombo([.key(123)]),                                                         // ←
+        .activateRow:   KeyCombo([.key(36)]),                                                          // Return
+        .openRow:       KeyCombo([.modifier(.command), .key(36)]),                                     // ⌘Return
+        .deleteRow:     KeyCombo([.key(51)]),                                                          // ⌫
+        .editRow:       KeyCombo([.key(UInt16(kVK_ANSI_E))]),                                          // E
+        .snoozeRow:     KeyCombo([.key(UInt16(kVK_ANSI_S))]),                                          // S
+        .undo:          KeyCombo([.modifier(.command), .key(UInt16(kVK_ANSI_Z))]),                    // ⌘Z
+        .closePopover:  KeyCombo([.key(53)]),                                                          // Esc
     ]
 }
