@@ -9,7 +9,7 @@ Type a reminder in plain English — `pick up dry cleaning tomorrow at 5pm @erra
 
 ## Features
 
-- **Plain-English input** — `tomorrow at 5pm`, `@home`, `#groceries`, `at the office` become real reminder fields
+- **Plain-English input** — `tomorrow at 5pm`, `@home`, `#groceries`, `&the office` become real reminder fields
 - **Quick Add** — global shortcut (⌥⌘N) opens a compact composer from anywhere; no need to switch apps
 - **Reminder Editing** — open any reminder inline to change title, notes, due date, priority, list, location, or tags
 - **Bulk Reminder Creation** — paste multiple lines; preview each parsed reminder; create all, select a subset, or retry only the failed ones
@@ -18,9 +18,10 @@ Type a reminder in plain English — `pick up dry cleaning tomorrow at 5pm @erra
 - **Keyboard-first** — arrows, Enter, ⌘Enter, ⌫, Tab, Esc — everything from the keyboard
 - **Customizable Shortcuts** — rebind any action (⌘,), including the global shortcuts ⌥⌘R (open remr) and ⌥⌘N (quick add)
 - **Appearance Modes** — Light, Dark, or Follow System
+- **Customizable Menu Bar Icon** — pick any symbol (bell, moon, flag, …) and colour it Automatic, Accent, or Custom (⌘,)
 - **Parse Preview** — live parsing feedback as you type; diagnostics show warnings before you create
 - **One Popover** — overdue, today, this week, next week, this month, next month, and future, no Dock icon needed
-- **Search & Tags** — filter with `@work`, `#urgent`, `!!`, the tag dropdown (with its own search box), or a `#tag` chip
+- **Search & Tags** — filter with `@work`, `#urgent`, `!!`, the tag dropdown (with its own search box and per-tag reminder counts), or a `#tag` chip
 - **Safety Net** — completed and deleted reminders can be restored from the Archive
 - **Fast Popover** — optimized presentation, glass-backed surfaces, no flicker
 
@@ -44,8 +45,10 @@ Copy `build/Build/Products/Debug/remr.app` to `/Applications` and grant Reminder
 | You type | What happens |
 |---|---|
 | `tomorrow at 5pm` | Due tomorrow at 5 PM |
-| `@home` · `#groceries` · `at the office` | List, tag, or location |
+| `@home` · `#groceries` · `&the office` | List, tag, or location |
 | `high priority` | Priority (`p1`–`p3`, `low` too) |
+
+`&` is the explicit location prefix (`&the office`, `&here`, `&my location`) and never collides with `@` (list-only) or `#` (tag). Quote a place to name it exactly, stop words and all: `&"the office and grill"`. The natural-language `at the office` form also works, and a location mid-sentence ends at the clause boundary: `at home i need to do this` → location `home`, title `i need to do this`. Locations resolve near your current location when permission is granted; `here` or `my location` pins the reminder to where you are right now. remr asks for location access only when you add a location — it never tracks you.
 
 **The list** — click a row to select it (highlighted); click again to open in Reminders. Arrows move the selection, Enter completes, ⌘Enter opens in Reminders, ⌫ deletes. Right-click supports moving, duplicating, and copying a title. Completed and deleted reminders are available from the Archive icon.
 
@@ -61,7 +64,7 @@ Copy `build/Build/Products/Debug/remr.app` to `/Applications` and grant Reminder
 
 **Sync** — the footer shows a friendly update status such as "Updated moments ago" or "Updated today."
 
-**Settings (⌘,)** — rebind any shortcut; both global shortcuts (⌥⌘R to open remr and ⌥⌘N to quick add) are editable there. Choose Light/Dark/System appearance.
+**Settings (⌘,)** — rebind any shortcut; both global shortcuts (⌥⌘R to open remr and ⌥⌘N to quick add) are editable there. Choose Light/Dark/System appearance, and customize the menu bar icon: symbol, style (Automatic matches the menu bar, Accent uses your macOS accent colour, Custom picks any colour), with a live preview.
 
 **Also** — Enter adds notes (Shift+Enter = new line) · select text in any app → Services → Create Reminders · right-click the menu bar icon to Refresh or Quit.
 

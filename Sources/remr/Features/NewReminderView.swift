@@ -46,6 +46,22 @@ struct NewReminderView: View {
     @State private var replaceTokenRequest = 0
     @State private var replaceTokenWith = ""
     @State private var replaceTokenRange: NSRange?
+    /// The currently shown height of the description + parse-preview expansion
+    /// region (0 when collapsed). Animated to drive the top-down reveal.
+    @State private var expansionHeight: CGFloat = 0
+    /// The measured natural height of the region, reported by `HeightReader`.
+    @State private var naturalBodyHeight: CGFloat = 0
+    /// True once the opening expansion has been animated. Keeps per-keystroke
+    /// mirroring from snapping the panel mid-open.
+    @State private var isOpen = false
+    /// True after the opening animation completes; only then are per-keystroke
+    /// height changes mirrored instantly (measurement settling during the
+    /// animation is ignored so it can't cancel the motion).
+    @State private var mirrorEnabled = false
+    /// Measurements smaller than this are treated as layout settling and
+    /// ignored. Real per-keystroke changes (a new line ≈ 16pt, a re-wrapped
+    /// chip row) are far larger and still mirror instantly.
+    private let expansionMirrorTolerance: CGFloat = 4
     /// External bump (MainView): focus the title field (Tab from the list,
     /// Shift+Tab from search, or popover open). Dual mechanism with
     /// `focusedField` + `titleFocusBump` — see `moveToNotes()`.
@@ -64,11 +80,11 @@ struct NewReminderView: View {
     /// Called exactly once after the submitted reminder is successfully saved.
     /// Parsing, bulk-preview routing, and failed saves do not invoke it.
     var onCreated: (() -> Void)? = nil
-    /// Called whenever the editor gains or loses entry content — i.e. when the
-    /// description + parse preview surfaces appear or disappear. Lets the
-    /// container animate layout around the expansion.
-    var onEntryPresenceChange: ((Bool) -> Void)? = nil
-
+    /// When true (default, in-app popover) the editor is its own glass
+    /// surface that grows over the list. When false (quick-add) the editor
+    /// sits directly on the panel's glass, so the panel's liquid-glass look
+    /// never changes as the description expands.
+    var hasOwnGlass: Bool = true
     init(titleFocusRequest: Int = 0,
          notesFocusRequestExternal: Int = 0,
          onTabForward: (() -> Void)? = nil,
@@ -76,7 +92,7 @@ struct NewReminderView: View {
          onEscape: (() -> Void)? = nil,
          onBulkPreview: ((String) -> Void)? = nil,
          onCreated: (() -> Void)? = nil,
-         onEntryPresenceChange: ((Bool) -> Void)? = nil) {
+         hasOwnGlass: Bool = true) {
         self.titleFocusRequest = titleFocusRequest
         self.notesFocusRequestExternal = notesFocusRequestExternal
         self.onTabForward = onTabForward
@@ -84,28 +100,22 @@ struct NewReminderView: View {
         self.onEscape = onEscape
         self.onBulkPreview = onBulkPreview
         self.onCreated = onCreated
-        self.onEntryPresenceChange = onEntryPresenceChange
+        self.hasOwnGlass = hasOwnGlass
         _title = State(initialValue: "")
     }
 
-    var body: some View {
-        VStack(spacing: 0) {
+    /// The editor's content. With `hasOwnGlass` (in-app popover) the whole
+    /// block is one glass surface that grows over the reminder list; without
+    /// it (quick-add) the content sits directly on the panel's own glass so
+    /// the panel's liquid-glass look never changes as the description expands.
+    @ViewBuilder
+    private var editorContent: some View {
+        let content = VStack(alignment: .leading, spacing: 0) {
             titleField
             if titleFocused, !suggestionMatches.isEmpty {
                 suggestionDropdown
             }
-            if hasEntryContent {
-                notesField
-                    .transition(entrySurfaceTransition)
-            }
-            if hasEntryContent, let parsedPreview {
-                ParsePreviewView(draft: ReminderDraft.fromParsed(
-                    parsedPreview,
-                    notes: notes,
-                    calendar: parsedPreview.listToken.flatMap { store.resolveList(token: $0).calendar }
-                ))
-                    .transition(entrySurfaceTransition)
-            }
+            expansionRegion
             if let saveError {
                 Text(saveError)
                     .font(.caption)
@@ -113,19 +123,28 @@ struct NewReminderView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 12)
                     .padding(.bottom, 6)
-                    .transition(entrySurfaceTransition)
             }
             // The add area is one glass surface, so adjacent editor pieces do
             // not draw overlapping translucent borders. Its bottom edge stays
             // square against the search row below the input area.
         }
-        .liquidGlassField(in: EntryContainerShape())
-        .animation(entryAnimation, value: entryAnimationKey)
-        .onChange(of: title) { _ in
-            recomputePreview()
+        if hasOwnGlass {
+            content.liquidGlassField(in: EntryContainerShape())
+        } else {
+            content
         }
-        .onChange(of: entryAnimationKey) { _ in
-            onEntryPresenceChange?(hasEntryContent)
+    }
+
+    var body: some View {
+        editorContent
+            .onChange(of: title) { _ in
+                recomputePreview()
+            }
+        .onChange(of: hasEntryContent) { _ in
+            syncExpansionHeight()
+        }
+        .onChange(of: naturalBodyHeight) { _ in
+            syncExpansionHeight()
         }
         .onChange(of: titleFocusRequest) { _ in
             focusedField = .title
@@ -143,6 +162,13 @@ struct NewReminderView: View {
         .onAppear {
             focusedField = .title
             recomputePreview()
+            // The containing window becomes key a moment after this appears;
+            // a focus request issued before then can be dropped by the focus
+            // system, so re-request once the window is actually key.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                focusedField = .title
+                titleFocusBump += 1
+            }
         }
     }
 
@@ -174,6 +200,11 @@ struct NewReminderView: View {
             ReminderInputView(
                 text: $title, refocusOnClear: true, onMoveDown: titleReturnPressed,
                 focusRequest: titleFocusBump,
+                // Fires when the field appears in a window without already
+                // owning first responder — the panel opens with the window
+                // not yet key, when a SwiftUI @FocusState request is dropped.
+                // The AppKit makeFirstResponder path lands reliably.
+                onAppearInWindow: { titleFocusBump += 1 },
                 onTokenChange: { context in completionContext = context; selectedSuggestion = 0 },
                 onFocusChange: { titleFocused = $0 },
                 dropdownActive: titleFocused && !suggestionMatches.isEmpty,
@@ -244,34 +275,78 @@ struct NewReminderView: View {
         !title.isEmpty || !notes.isEmpty
     }
 
-    /// A short, opacity-only reveal keeps the inserted NSTextView in its final
-    /// layout position while the parent glass surface animates its height.
-    /// Moving the representable during insertion makes it paint over the title
-    /// field before AppKit has completed its first layout pass.
-    private var entryAnimation: Animation {
-        .easeInOut(duration: 0.2)
+    /// The description field + parse preview, laid out at their natural height
+    /// so it can be measured, but displayed at only `expansionHeight` (0 when
+    /// collapsed) and clipped against it. As the height animates, the growing
+    /// clip unveils the content top-down in lockstep with the search-row glide.
+    private var expansionRegion: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if hasEntryContent {
+                notesField
+            }
+            if hasEntryContent, let parsedPreview {
+                ParsePreviewView(draft: ReminderDraft.fromParsed(
+                    parsedPreview,
+                    notes: notes,
+                    calendar: parsedPreview.listToken.flatMap { store.resolveList(token: $0).calendar }
+                ))
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)        // natural height, for measurement
+        .background(HeightReader { naturalBodyHeight = $0 }) // measures the fixedSize content
+        .frame(height: expansionHeight, alignment: .top)     // ideal == expansionHeight (see below)
+        .clipped()
     }
 
-    private var entrySurfaceTransition: AnyTransition {
-        // Reveal via the editor's growing glass clip (the editor is clipped to
-        // `EntryContainerShape`): as the panel height animates it unveils the
-        // description and preview line-by-line, in sync with the search bar
-        // glide. `.identity` keeps the inserted NSTextView in its final layout
-        // position (no translation during AppKit's first layout pass) while the
-        // clip does the revealing.
-        .identity
-    }
+    /// One animation drives the expansion — either SwiftUI (in-app: the
+    /// `withAnimation` transaction also reflows the search row) or AppKit
+    /// (quick-add: the hosting window's resize performs the reveal). The two
+    /// are never mixed, so the panel edge and the revealed content stay
+    /// frame-locked. Per-keystroke growth of the measured natural height is
+    /// mirrored instantly, never animated; measurement *settling* (a couple of
+    /// points over the first layout passes) is ignored so the panel never
+    /// wobbles.
+    private func syncExpansionHeight() {
+        if hasEntryContent {
+            // The notes/preview just appeared; `naturalBodyHeight` is still 0
+            // for this pass. Wait for the measurement callback to set the
+            // height — acting on 0 now would pop the region to its final
+            // height on the next pass.
+            guard naturalBodyHeight > 0 else { return }
 
-    /// Animation key: fires only on expansion (first text appears), collapse
-    /// (editor cleared), or a save error appearing. Parse-preview content
-    /// refreshes leave the key unchanged and therefore unanimated.
-    private var entryAnimationKey: EntryAnimationKey {
-        EntryAnimationKey(hasEntryContent: hasEntryContent, saveError: saveError)
-    }
-
-    private struct EntryAnimationKey: Equatable {
-        var hasEntryContent: Bool
-        var saveError: String?
+            if !isOpen {
+                isOpen = true
+                mirrorEnabled = false
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    expansionHeight = naturalBodyHeight
+                }
+                // Let the opening animation finish before per-keystroke
+                // instant mirroring kicks in.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                    if isOpen { mirrorEnabled = true }
+                }
+            } else if abs(naturalBodyHeight - expansionHeight) >= expansionMirrorTolerance {
+                if mirrorEnabled {
+                    // Already open: mirror per-keystroke growth instantly.
+                    expansionHeight = naturalBodyHeight // no animation
+                } else {
+                    // Still opening and the first measurement was meaningfully
+                    // off: re-target the in-flight animation smoothly instead
+                    // of snapping.
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        expansionHeight = naturalBodyHeight
+                    }
+                }
+            }
+        } else if isOpen {
+            isOpen = false
+            mirrorEnabled = false
+            if expansionHeight > 0 {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    expansionHeight = 0
+                }
+            }
+        }
     }
 
     /// Grows with the description (one line ≈ 32pt, capped at ~5 lines) so a
@@ -524,11 +599,11 @@ struct NewReminderView: View {
         var saveMessage: String?
 
         if case .unresolved(let phrase) = draft.location {
-            if let location = await LocationGeocoder.shared.geocode(phrase) {
+            if let located = await LocationGeocoder.shared.geocode(phrase) {
                 draft.location = .resolved(DeletedLocation(
-                    title: phrase,
-                    latitude: location.coordinate.latitude,
-                    longitude: location.coordinate.longitude,
+                    title: located.title,
+                    latitude: located.latitude,
+                    longitude: located.longitude,
                     radius: 100
                 ))
             } else {
@@ -540,5 +615,18 @@ struct NewReminderView: View {
 
         try await store.create(from: draft)
         return saveMessage
+    }
+}
+
+/// Reports the natural height of the view it's backgrounded onto, as a
+/// preference-free callback. Fires on appear and whenever that height changes.
+struct HeightReader: View {
+    let onChange: (CGFloat) -> Void
+    var body: some View {
+        GeometryReader { proxy in
+            Color.clear
+                .onAppear { onChange(proxy.size.height) }
+                .onChange(of: proxy.size.height) { _ in onChange(proxy.size.height) }
+        }
     }
 }

@@ -12,6 +12,12 @@ private final class QuickAddPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+/// Fixed height for the quick-add panel (clamped to the visible screen). The
+/// description unfolds INSIDE this glass surface while typing — the window
+/// never resizes, keeping the reveal motion identical to the in-app popover
+/// and eliminating the resize-driven "bounce".
+private let quickAddFixedHeight: CGFloat = 360
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     static weak var instance: AppDelegate?
@@ -74,17 +80,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         reapplyHotKeys()
     }
 
-    private func reapplyHotKeys() {
-        reapplyHotKey(.togglePopover)
-        reapplyHotKey(.quickAdd)
+    private func reapplyHotKeys(bindings: [BindableAction: KeyCombo]? = nil) {
+        reapplyHotKey(.togglePopover, bindings: bindings)
+        reapplyHotKey(.quickAdd, bindings: bindings)
     }
 
     /// Re-register one global binding without disturbing the other action's
     /// registration. A failed replacement restores this action's last working
     /// registration and reports the conflict through SettingsStore.
-    private func reapplyHotKey(_ action: BindableAction) {
+    private func reapplyHotKey(_ action: BindableAction,
+                               bindings: [BindableAction: KeyCombo]? = nil) {
         let settings = SettingsStore.shared
-        let combo = settings.combo(for: action)
+        // Prefer the emitted dictionary: reading the store property inside a
+        // sink would observe the pre-assignment value (@Published sends in
+        // willSet) and re-register the previous hotkey.
+        let combo = bindings?[action] ?? settings.combo(for: action)
         let current: KeyCombo?
         let ref: EventHotKeyRef?
         switch action {
@@ -197,7 +207,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = item.button {
-            button.image = StatusIcon.makeIcon()
+            let settings = SettingsStore.shared
+            StatusIcon.apply(to: button,
+                             symbol: settings.menuBarIconSymbol,
+                             style: settings.menuBarIconStyle,
+                             color: settings.menuBarIconColor)
             button.action = #selector(statusItemClicked(_:))
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
             button.toolTip = "remr"
@@ -213,9 +227,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Use the native quick opening animation; closing remains the custom
         // short window fade below so outside-click dismissal stays unchanged.
         popover.animates = true
-        popover.contentViewController = NSHostingController(
+        let hosting = NSHostingController(
             rootView: ContentView().environmentObject(store).environmentObject(SettingsStore.shared)
         )
+        // Warm the first SwiftUI layout now, while the app is still settling
+        // in behind the status item: the first popover show then appears
+        // already laid out instead of rendering its initial tree on screen.
+        // No window is attached, so onAppear/monitor installation stays idle.
+        hosting.view.layoutSubtreeIfNeeded()
+        popover.contentViewController = hosting
         popover.contentSize = NSSize(width: 400, height: 600)
         self.popover = popover
 
@@ -250,11 +270,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         SettingsStore.shared.$bindings
             .dropFirst()   // skip the initial value emission on subscribe
-            .sink { [weak self] _ in self?.reapplyHotKeys() }
+            .sink { [weak self] bindings in self?.reapplyHotKeys(bindings: bindings) }
             .store(in: &settingsCancellables)
 
         SettingsStore.shared.$appearance
             .sink { [weak self] appearance in self?.applyAppearance(appearance) }
+            .store(in: &settingsCancellables)
+
+        // Any of the three icon settings re-renders the status item. The
+        // emitted values are used rather than re-reading the store: @Published
+        // sends in willSet, so reading the property inside a sink observes the
+        // previous value and every change would lag by one.
+        SettingsStore.shared.$menuBarIconSymbol
+            .combineLatest(SettingsStore.shared.$menuBarIconStyle,
+                           SettingsStore.shared.$menuBarIconColor)
+            .dropFirst()
+            .sink { [weak self] symbol, style, color in
+                guard let button = self?.statusItem?.button else { return }
+                StatusIcon.apply(to: button, symbol: symbol, style: style, color: color)
+            }
             .store(in: &settingsCancellables)
     }
 
@@ -304,6 +338,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             closePopover()
         } else {
             store.refresh()
+            // Open instantly, then fade in. The native popover spring
+            // (~0.25s) re-renders the Liquid Glass surface on every frame —
+            // that per-frame glass work is what reads as "sluggish" on open.
+            // Showing at full size and animating only the window alpha is a
+            // single cheap layer composite, and it doubles as cover for the
+            // initial list fill that lands right after show().
+            popover.animates = false
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             // macOS 26's NSPopover supplies the native Liquid Glass surface.
             // Older systems need the transparent host for the material fallback.
@@ -314,6 +355,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             applyAppearance(SettingsStore.shared.appearance)
+            if let window = popover.contentViewController?.view.window {
+                // Set the start alpha before the runloop paints so the first
+                // composited frame is already transparent — no flash.
+                window.alphaValue = 0
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.1
+                    context.allowsImplicitAnimation = true
+                    window.animator().alphaValue = 1
+                }
+            }
             // Hardening: an .accessory app shown from the status item is not
             // activated by the status-item click alone, and local NSEvent
             // monitors only see hardware key events delivered to an active app.
@@ -350,20 +401,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func showQuickAdd() {
         if popover.isShown { closePopover() }
 
-        // Height reports can arrive after SwiftUI has replaced the hosting
-        // root view, so identify each presentation to reject stale reports.
+        // Invalidate any pending close fade from a previous presentation.
         quickAddCloseGeneration &+= 1
-        let sessionGeneration = quickAddCloseGeneration
         let sessionID = UUID()
+
+        let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+        let fixedHeight = min(quickAddFixedHeight, (screen?.visibleFrame.height ?? 800) - 24)
+
         let rootView = AnyView(
             QuickAddView(sessionID: sessionID,
                          onCancel: { [weak self] in self?.closeQuickAdd() },
-                         onCreated: { [weak self] in self?.closeQuickAdd() },
-                         onHeightChange: { [weak self] height in
-                             guard let self,
-                                   self.quickAddCloseGeneration == sessionGeneration else { return }
-                             self.resizeQuickAdd(to: height)
-                         })
+                         onCreated: { [weak self] in self?.closeQuickAdd() })
                 .environmentObject(store)
                 .environmentObject(SettingsStore.shared)
         )
@@ -376,10 +426,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let hosting = NSHostingController(rootView: rootView)
             let newWindow = QuickAddPanel(contentViewController: hosting)
             newWindow.styleMask = [.borderless]
-            newWindow.setContentSize(NSSize(width: 500, height: 120))
             newWindow.isOpaque = false
             newWindow.backgroundColor = .clear
-            newWindow.hasShadow = true
+            // No window shadow: the panel is a transparent window whose only
+            // opaque content is the glass card, so AppKit re-derives the
+            // shadow from the card's shape every frame as it grows — that
+            // re-computation reads as the liquid-glass "shimmy" at the top.
+            newWindow.hasShadow = false
             newWindow.isReleasedWhenClosed = false
             newWindow.isFloatingPanel = true
             newWindow.level = .floating
@@ -391,13 +444,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window = newWindow
         }
 
+        // The panel is a fixed-size glass surface: the description unfolds
+        // INSIDE it (pure SwiftUI, like the in-app popover), so the window
+        // never moves or resizes while typing — that was the source of the
+        // reveal "bounce". Sizing applies to reused windows too, so a reopen
+        // always presents the same fixed panel.
+        window.setContentSize(NSSize(width: 500, height: fixedHeight))
+
         // Restore the reusable panel before ordering it front. This keeps a
         // rapid reopen fully visible and invalidates any pending fade.
         window.alphaValue = 1
 
-        let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
-            ?? NSScreen.main
-            ?? NSScreen.screens.first
         if let screen {
             let visibleFrame = screen.visibleFrame
             let frame = window.frame
@@ -407,45 +464,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.center()
         }
         applyAppearance(SettingsStore.shared.appearance)
-        window.makeKeyAndOrderFront(nil)
+        // Activate BEFORE ordering front: the app is inactive when the global
+        // hotkey fires, and an inactive app's window can never become key —
+        // which is why autofocus never landed until the user clicked into the
+        // panel. Ordering front after activation makes the panel key, so the
+        // editor's focus request sticks.
         NSApp.activate(ignoringOtherApps: true)
-    }
-
-    /// Adjusts only the panel's height to match the hosting view's ideal size.
-    /// The top edge stays fixed so growth extends downward — typing never
-    /// yanks the popup upward.
-    private func resizeQuickAdd(to idealHeight: CGFloat) {
-        guard let window = quickAddWindow,
-              window.isVisible,
-              idealHeight.isFinite,
-              idealHeight > 0 else { return }
-
-        let screen = window.screen
-            ?? NSScreen.screens.first { screen in
-                screen.visibleFrame.contains(NSPoint(x: window.frame.midX, y: window.frame.midY))
-            }
-            ?? NSScreen.main
-            ?? NSScreen.screens.first
-        guard let screen else { return }
-
-        let visibleFrame = screen.visibleFrame
-        let minimumHeight: CGFloat = 112
-        let maximumHeight = max(minimumHeight, visibleFrame.height - 24)
-        let targetHeight = min(max(idealHeight, minimumHeight), maximumHeight)
-        let currentFrame = window.frame
-        guard abs(currentFrame.height - targetHeight) >= 0.5 else { return }
-
-        // Top edge anchored: the panel grows downward from its current top,
-        // so typing never shifts the popup upward.
-        let targetFrame = NSRect(x: currentFrame.minX,
-                                 y: currentFrame.maxY - targetHeight,
-                                 width: currentFrame.width,
-                                 height: targetHeight)
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.2
-            context.allowsImplicitAnimation = true
-            window.animator().setFrame(targetFrame, display: true)
-        }
+        window.makeKeyAndOrderFront(nil)
     }
 
     private func closeQuickAdd() {

@@ -36,6 +36,68 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
     }
 }
 
+/// Menu bar icon style: automatic (system black/white), accent (the macOS
+/// accent colour), or custom (any user-picked colour).
+enum MenuBarIconStyle: String, CaseIterable, Identifiable {
+    case automatic
+    case accent
+    case custom
+
+    var id: Self { self }
+
+    var label: String {
+        switch self {
+        case .automatic: return "Automatic"
+        case .accent: return "Accent colour"
+        case .custom: return "Custom colour"
+        }
+    }
+
+    /// Load from a persisted raw value, mapping the pre-rename names
+    /// ("template"/"monochrome") to their current equivalents.
+    static func load(rawValue: String?) -> MenuBarIconStyle {
+        if let style = MenuBarIconStyle(rawValue: rawValue ?? "") { return style }
+        switch rawValue {
+        case "template": return .automatic
+        case "monochrome": return .accent
+        default: return .accent
+        }
+    }
+}
+
+/// Predefined menu bar icons (SF Symbols).
+enum MenuBarIconSymbol: String, CaseIterable, Identifiable {
+    case bellBadge = "bell.badge"
+    case bell = "bell"
+    case checkmarkCircle = "checkmark.circle"
+    case exclamationmarkCircle = "exclamationmark.circle"
+    case clockBadge = "clock.badge"
+    case tag = "tag"
+    case flag = "flag"
+    case star = "star"
+    case moon = "moon"
+    case sunMax = "sun.max"
+
+    var id: Self { self }
+
+    var label: String {
+        switch self {
+        case .bellBadge: return "Bell with badge"
+        case .bell: return "Bell"
+        case .checkmarkCircle: return "Checkmark circle"
+        case .exclamationmarkCircle: return "Exclamation circle"
+        case .clockBadge: return "Clock with badge"
+        case .tag: return "Tag"
+        case .flag: return "Flag"
+        case .star: return "Star"
+        case .moon: return "Moon"
+        case .sunMax: return "Sun"
+        }
+    }
+
+    var systemName: String { rawValue }
+}
+
 /// Persisted, live-applied keyboard bindings. Defaults come from
 /// `DefaultBindings.all`; user overrides are stored as JSON in UserDefaults
 /// under `remr.keyBindings` and merged over the defaults on load, so a
@@ -49,6 +111,12 @@ final class SettingsStore: ObservableObject {
     /// The app appearance, applied immediately and persisted independently of
     /// keyboard binding drafts.
     @Published private(set) var appearance: AppearanceMode
+    /// Menu bar icon symbol (SF Symbol name).
+    @Published private(set) var menuBarIconSymbol: MenuBarIconSymbol
+    /// Menu bar icon style.
+    @Published private(set) var menuBarIconStyle: MenuBarIconStyle
+    /// Custom menu bar icon color (used when style is .custom).
+    @Published private(set) var menuBarIconColor: Color
 
     /// Shown under the Keyboard section; set by assign() or by AppDelegate on
     /// hotkey registration failure.
@@ -63,11 +131,23 @@ final class SettingsStore: ObservableObject {
     private let defaults: UserDefaults
     private let bindingsKey = "remr.keyBindings"
     private let appearanceKey = "remr.appearance"
+    private let menuBarIconSymbolKey = "remr.menuBarIconSymbol"
+    private let menuBarIconStyleKey = "remr.menuBarIconStyle"
+    /// Canonical sRGB components [r, g, b, a] — the single persisted form so a
+    /// reloaded color is always the exact representation the picker set.
+    private let menuBarIconColorRGBAKey = "remr.menuBarIconColorRGBA"
+    /// Legacy persisted form (archived NSColor) from before canonicalization.
+    private let menuBarIconColorKey = "remr.menuBarIconColor"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         bindings = Self.load(defaults: defaults, bindingsKey: bindingsKey)
         appearance = AppearanceMode(rawValue: defaults.string(forKey: appearanceKey) ?? "") ?? .system
+        menuBarIconSymbol = MenuBarIconSymbol(rawValue: defaults.string(forKey: menuBarIconSymbolKey) ?? "") ?? .bellBadge
+        menuBarIconStyle = MenuBarIconStyle.load(rawValue: defaults.string(forKey: menuBarIconStyleKey))
+        menuBarIconColor = Self.loadColor(defaults: defaults,
+                                          rgbaKey: menuBarIconColorRGBAKey,
+                                          legacyKey: menuBarIconColorKey) ?? .accentColor
         errorMessage = nil
     }
 
@@ -75,6 +155,54 @@ final class SettingsStore: ObservableObject {
         guard self.appearance != appearance else { return }
         self.appearance = appearance
         defaults.set(appearance.rawValue, forKey: appearanceKey)
+    }
+
+    func setMenuBarIconSymbol(_ symbol: MenuBarIconSymbol) {
+        guard menuBarIconSymbol != symbol else { return }
+        menuBarIconSymbol = symbol
+        defaults.set(symbol.rawValue, forKey: menuBarIconSymbolKey)
+    }
+
+    func setMenuBarIconStyle(_ style: MenuBarIconStyle) {
+        guard menuBarIconStyle != style else { return }
+        menuBarIconStyle = style
+        defaults.set(style.rawValue, forKey: menuBarIconStyleKey)
+    }
+
+    func setMenuBarIconColor(_ color: Color) {
+        let rgba = Self.canonicalComponents(of: color)
+        let canonical = Color(red: rgba[0], green: rgba[1], blue: rgba[2], opacity: rgba[3])
+        guard menuBarIconColor != canonical else { return }
+        menuBarIconColor = canonical
+        defaults.set(rgba, forKey: menuBarIconColorRGBAKey)
+    }
+
+    /// Reduce a color to rounded sRGB components (6 decimal places). The
+    /// SwiftUI↔AppKit bridge rounds through float32, so without rounding the
+    /// persisted and reloaded doubles drift and `Color` equality (and the
+    /// picker's sync) would depend on bridge internals.
+    private static func canonicalComponents(of color: Color) -> [Double] {
+        let ns = NSColor(color).usingColorSpace(.sRGB) ?? NSColor(color)
+        return [ns.redComponent, ns.greenComponent, ns.blueComponent, ns.alphaComponent]
+            .map { Double(($0 * 1_000_000).rounded()) / 1_000_000 }
+    }
+
+    /// Load the menu bar icon color: canonical sRGB components first, then the
+    /// legacy archived-NSColor form (migrated to the canonical form on load).
+    private static func loadColor(defaults: UserDefaults,
+                                  rgbaKey: String,
+                                  legacyKey: String) -> Color? {
+        if let rgba = defaults.array(forKey: rgbaKey) as? [Double], rgba.count == 4 {
+            return Color(red: rgba[0], green: rgba[1], blue: rgba[2], opacity: rgba[3])
+        }
+        guard let data = defaults.data(forKey: legacyKey),
+              let color = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NSColor.self, from: data),
+              let srgb = color.usingColorSpace(.sRGB) else { return nil }
+        let nsColor = NSColor(srgbRed: srgb.redComponent, green: srgb.greenComponent,
+                              blue: srgb.blueComponent, alpha: srgb.alphaComponent)
+        let rgba = canonicalComponents(of: Color(nsColor))
+        defaults.set(rgba, forKey: rgbaKey)
+        return Color(red: rgba[0], green: rgba[1], blue: rgba[2], opacity: rgba[3])
     }
 
     private static func load(defaults: UserDefaults, bindingsKey: String) -> [BindableAction: KeyCombo] {

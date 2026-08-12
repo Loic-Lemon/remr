@@ -307,10 +307,10 @@ struct BulkReminderPreview: View {
         guard rows.indices.contains(index) else { return }
         var draft = rows[index].draft
         if case .unresolved(let phrase) = draft.location {
-            if let location = await LocationGeocoder.shared.geocode(phrase) {
-                draft.location = .resolved(DeletedLocation(title: phrase,
-                                                            latitude: location.coordinate.latitude,
-                                                            longitude: location.coordinate.longitude,
+            if let located = await LocationGeocoder.shared.geocode(phrase) {
+                draft.location = .resolved(DeletedLocation(title: located.title,
+                                                            latitude: located.latitude,
+                                                            longitude: located.longitude,
                                                             radius: 100))
             } else {
                 draft.title += " at \(phrase)"

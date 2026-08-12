@@ -163,17 +163,42 @@ struct ParserCheck {
         checkEqual(r.title, "@unknown list task", "11 title")
     }
 
-    // 11b. unmatched @ mid-line becomes a location phrase
+    // 11b. @ is list-only: an unmatched @token stays in the title with a
+    // diagnostic — locations use the & prefix now, not @
     do {
         let r = parse("buy milk @the office")
-        checkEqual(r.locationPhrase, "the office", "11b location")
+        check(r.locationPhrase == nil, "11b no location from @")
         check(r.listToken == nil, "11b no list token")
-        check(r.diagnostics.isEmpty, "11b diagnostics empty for location @phrase")
-        checkEqual(r.title, "buy milk", "11b title")
-        let spaced = parse("buy milk @ the office")
-        checkEqual(spaced.locationPhrase, "the office", "11b location (space after @)")
-        checkEqual(spaced.title, "buy milk", "11b title (space after @)")
-        check(spaced.diagnostics.isEmpty, "11b spaced diagnostics empty")
+        checkEqual(r.diagnostics, [.unmatchedList("the")], "11b unmatched-list diagnostic")
+        checkEqual(r.title, "buy milk @the office", "11b title")
+    }
+
+    // 11c. & — the explicit location prefix
+    do {
+        let r = parse("buy milk &the office")
+        checkEqual(r.locationPhrase, "the office", "11c location")
+        checkEqual(r.title, "buy milk", "11c title")
+        check(r.diagnostics.isEmpty, "11c diagnostics empty")
+        let spaced = parse("buy milk & the office")
+        checkEqual(spaced.locationPhrase, "the office", "11c location (space after &)")
+        checkEqual(spaced.title, "buy milk", "11c title (space after &)")
+    }
+
+    // 11d. & mid-sentence stops at the clause boundary
+    do {
+        let r = parse("i need to do this &home")
+        checkEqual(r.locationPhrase, "home", "11d location")
+        checkEqual(r.title, "i need to do this", "11d title")
+    }
+
+    // 11e. & at line start, and & with a here-phrase
+    do {
+        let r = parse("&the office i need milk")
+        checkEqual(r.locationPhrase, "the office", "11e location")
+        checkEqual(r.title, "i need milk", "11e title")
+        let here = parse("meet &here")
+        checkEqual(here.locationPhrase, "here", "11e here location")
+        checkEqual(here.title, "meet", "11e here title")
     }
 
     // 12. address location
@@ -188,6 +213,83 @@ struct ParserCheck {
         let r = parse("Meet John at the office")
         checkEqual(r.locationPhrase, "the office", "13 location")
         checkEqual(r.title, "Meet John", "13 title")
+    }
+
+    // 13b. mid-sentence "at" location stops at the clause boundary
+    do {
+        let r = parse("at home i need to do this")
+        checkEqual(r.locationPhrase, "home", "13b location")
+        checkEqual(r.title, "i need to do this", "13b title")
+    }
+
+    // 13c. at + dash separator ("--" stays in the title as the sentence break)
+    do {
+        let r = parse("fix the sink at home -- i need to do this")
+        checkEqual(r.locationPhrase, "home", "13c location")
+        checkEqual(r.title, "fix the sink -- i need to do this", "13c title")
+    }
+
+    // 13d. at + em dash separator
+    do {
+        let r = parse("fix the sink at home — need milk")
+        checkEqual(r.locationPhrase, "home", "13d location")
+        checkEqual(r.title, "fix the sink — need milk", "13d title")
+    }
+
+    // 13e. & location mid-sentence stops at the clause boundary
+    do {
+        let r = parse("buy milk &the office and grab the mail")
+        checkEqual(r.locationPhrase, "the office", "13e location")
+        checkEqual(r.title, "buy milk and grab the mail", "13e title")
+    }
+
+    // 13f. capitalized "and" is a place join, not a clause ("5th and Main")
+    do {
+        let r = parse("meet at 5th and Main")
+        checkEqual(r.locationPhrase, "5th and Main", "13f location")
+        checkEqual(r.title, "meet", "13f title")
+    }
+
+    // 13g. "my location" keeps "my" (here-phrase)
+    do {
+        let r = parse("pick up laundry at my location")
+        checkEqual(r.locationPhrase, "my location", "13g location")
+        checkEqual(r.title, "pick up laundry", "13g title")
+    }
+
+    // 14. quoted & location is verbatim — stop words inside stay
+    do {
+        let r = parse("meet &\"the office and grill\"")
+        checkEqual(r.locationPhrase, "the office and grill", "14 location")
+        checkEqual(r.title, "meet", "14 title")
+    }
+
+    // 15. quoted at location
+    do {
+        let r = parse("lunch at \"Salt and Straw\"")
+        checkEqual(r.locationPhrase, "Salt and Straw", "15 location")
+        checkEqual(r.title, "lunch", "15 title")
+    }
+
+    // 16. quoted mid-sentence keeps everything after the quote in the title
+    do {
+        let r = parse("&\"the office and grill\" i need milk")
+        checkEqual(r.locationPhrase, "the office and grill", "16 location")
+        checkEqual(r.title, "i need milk", "16 title")
+    }
+
+    // 17. unquoted lowercase "and" still splits (documented boundary behavior)
+    do {
+        let r = parse("meet &the office and grill")
+        checkEqual(r.locationPhrase, "the office", "17 location")
+        checkEqual(r.title, "meet and grill", "17 title")
+    }
+
+    // 18. unquoted capitalized "and" is a place join
+    do {
+        let r = parse("meet &The Office and Main")
+        checkEqual(r.locationPhrase, "The Office and Main", "18 location")
+        checkEqual(r.title, "meet", "18 title")
     }
 
     // 14. no tokens

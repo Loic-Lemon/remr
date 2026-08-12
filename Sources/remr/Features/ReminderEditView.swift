@@ -229,14 +229,14 @@ struct ReminderEditView: View {
         Task { @MainActor [initialCandidate] in
             var candidate = initialCandidate
             if case .unresolved(let phrase) = candidate.location {
-                guard let coordinate = await LocationGeocoder.shared.geocode(phrase) else {
+                guard let located = await LocationGeocoder.shared.geocode(phrase) else {
                     saving = false
                     errorMessage = "Couldn't find location “\(phrase)” — choose another location or clear it"
                     return
                 }
-                candidate.location = .resolved(DeletedLocation(title: phrase,
-                                                                 latitude: coordinate.coordinate.latitude,
-                                                                 longitude: coordinate.coordinate.longitude,
+                candidate.location = .resolved(DeletedLocation(title: located.title,
+                                                                 latitude: located.latitude,
+                                                                 longitude: located.longitude,
                                                                  radius: 100))
             }
 

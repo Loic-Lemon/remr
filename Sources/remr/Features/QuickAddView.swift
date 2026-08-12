@@ -13,16 +13,13 @@ struct QuickAddView: View {
     let sessionID: UUID
     let onCancel: () -> Void
     let onCreated: () -> Void
-    let onHeightChange: ((CGFloat) -> Void)?
 
     init(sessionID: UUID,
          onCancel: @escaping () -> Void,
-         onCreated: @escaping () -> Void,
-         onHeightChange: ((CGFloat) -> Void)? = nil) {
+         onCreated: @escaping () -> Void) {
         self.sessionID = sessionID
         self.onCancel = onCancel
         self.onCreated = onCreated
-        self.onHeightChange = onHeightChange
     }
 
     var body: some View {
@@ -33,8 +30,6 @@ struct QuickAddView: View {
             content
         }
         .frame(width: 440)
-        .background(QuickAddHeightReporter(onHeightChange: onHeightChange)
-            .allowsHitTesting(false))
         .liquidGlassPopup()
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Quick add reminder")
@@ -65,7 +60,11 @@ struct QuickAddView: View {
     private var content: some View {
         switch store.accessState {
         case .authorized:
-            NewReminderView(onEscape: onCancel, onCreated: onCreated)
+            // The editor sits directly on the panel's glass (no inner glass
+            // surface), so the liquid-glass look stays constant as the
+            // description expands; the unfold is pure SwiftUI inside the
+            // fixed-size panel.
+            NewReminderView(onEscape: onCancel, onCreated: onCreated, hasOwnGlass: false)
                 .id(sessionID)
                 .environmentObject(store)
                 .environmentObject(settings)
@@ -131,94 +130,5 @@ struct QuickAddView: View {
     private func openRemindersSettings() {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Reminders") else { return }
         NSWorkspace.shared.open(url)
-    }
-}
-
-
-private struct QuickAddHeightReporter: NSViewRepresentable {
-    let onHeightChange: ((CGFloat) -> Void)?
-
-    func makeNSView(context: Context) -> HeightReportingView {
-        HeightReportingView(onHeightChange: onHeightChange)
-    }
-
-    func updateNSView(_ nsView: HeightReportingView, context: Context) {
-        nsView.onHeightChange = onHeightChange
-        nsView.scheduleMeasurement()
-    }
-}
-
-private final class HeightReportingView: NSView {
-    var onHeightChange: ((CGFloat) -> Void)?
-
-    private var measurementGeneration = 0
-    private var measurementPending = false
-    private var lastReportedHeight: CGFloat?
-
-    init(onHeightChange: ((CGFloat) -> Void)?) {
-        self.onHeightChange = onHeightChange
-        super.init(frame: .zero)
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        scheduleMeasurement()
-    }
-
-    override func layout() {
-        super.layout()
-        scheduleMeasurement()
-    }
-
-    func scheduleMeasurement() {
-        measurementGeneration &+= 1
-        guard !measurementPending else { return }
-        measurementPending = true
-        let generation = measurementGeneration
-
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.measurementPending = false
-            guard generation == self.measurementGeneration else {
-                self.scheduleMeasurement()
-                return
-            }
-            self.measureAndReport()
-        }
-    }
-
-    private func measureAndReport() {
-        guard let contentView = window?.contentView else { return }
-        contentView.layoutSubtreeIfNeeded()
-
-        let fittingHeight = contentView.fittingSize.height
-        let intrinsicHeight = contentView.intrinsicContentSize.height
-        let currentHeight = contentView.bounds.height
-        let fittingIsValid = fittingHeight.isFinite && fittingHeight > 0
-        let intrinsicIsValid = intrinsicHeight.isFinite && intrinsicHeight > 0
-
-        let height: CGFloat?
-        if fittingIsValid && intrinsicIsValid {
-            // A hosting view can temporarily expose its fixed window frame as
-            // fittingSize while its intrinsic size already reflects new content.
-            let fittingIsCurrent = abs(fittingHeight - currentHeight) < 0.5
-            let intrinsicIsCurrent = abs(intrinsicHeight - currentHeight) < 0.5
-            height = fittingIsCurrent && !intrinsicIsCurrent ? intrinsicHeight : fittingHeight
-        } else if fittingIsValid {
-            height = fittingHeight
-        } else if intrinsicIsValid {
-            height = intrinsicHeight
-        } else {
-            height = nil
-        }
-
-        guard let height,
-              lastReportedHeight.map({ abs($0 - height) >= 0.5 }) ?? true else { return }
-        lastReportedHeight = height
-        onHeightChange?(height)
     }
 }

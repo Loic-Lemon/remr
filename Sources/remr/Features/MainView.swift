@@ -49,10 +49,6 @@ struct MainView: View {
     /// Keys currently held down (canonical codes) — the live chord being matched.
     @State private var heldKeys: Set<UInt16> = []
 
-    /// Whether the composer currently shows description/parse content. Drives
-    /// the slide animation of the composer layer over the fixed list layer.
-    @State private var composerExpanded = false
-
     /// Height of the collapsed composer block (editor + search row), reserved
     /// in the fixed list layer so expansion overlays the list instead of
     /// pushing it down.
@@ -126,6 +122,19 @@ struct MainView: View {
         store.allTags()
     }
 
+    /// Incomplete-reminder count per tag (lowercased) for the tag picker, so
+    /// filtering by a tag shows what it will match. Same tag source as the
+    /// filter logic itself: title + notes of incomplete reminders only.
+    private var tagCounts: [String: Int] {
+        var counts: [String: Int] = [:]
+        for item in allItems {
+            for tag in NaturalLanguageParser.extractTags(from: (item.title ?? "") + " " + (item.notes ?? "")) {
+                counts[tag.lowercased(), default: 0] += 1
+            }
+        }
+        return counts
+    }
+
     private var emptyStateText: String {
         if isSearching { return "No reminders match" }
         if let activeFilter { return "No reminders with #\(activeFilter)" }
@@ -191,8 +200,7 @@ struct MainView: View {
                                                 onBulkPreview: {
                                                     self.undoEntry = nil
                                                     self.bulkInput = $0
-                                                },
-                                                onEntryPresenceChange: { composerExpanded = $0 })
+                                                })
                                 searchRow
                             }
                             .background(
@@ -205,7 +213,6 @@ struct MainView: View {
                                 .frame(maxHeight: .infinity)
                                 .allowsHitTesting(false)
                         }
-                        .animation(.easeInOut(duration: 0.2), value: composerExpanded)
                     }
                     .onPreferenceChange(TopBlockHeightKey.self) { height in
                         // Reserved space tracks the collapsed height: the first
@@ -342,6 +349,7 @@ struct MainView: View {
             .padding(.vertical, 6)
             .liquidGlassField()
             TagFilterMenu(allTags: allTags,
+                          tagCounts: tagCounts,
                           isPresented: $showTagFilter,
                           onManage: { showTagManager = true })
             .popover(isPresented: $showTagManager, arrowEdge: .bottom) {
@@ -432,10 +440,12 @@ struct MainView: View {
         // width, so when the composer expands the search row glides down with
         // it and reads as the same surface — blurring the list items it passes
         // over — rather than a transparent row showing raw items through gaps.
+        // Horizontal padding sits INSIDE the background so the band spans the
+        // full content width, matching the editor's glass above.
         .padding(.top, 8)
         .padding(.bottom, 10)
-        .background(AppPalette.surfaceFill)
         .padding(.horizontal, 12)
+        .background(AppPalette.surfaceFill)
         .zIndex((showTagFilter || showRecovery) ? 10 : 0)
     }
 

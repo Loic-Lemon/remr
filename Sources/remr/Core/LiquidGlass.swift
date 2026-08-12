@@ -21,9 +21,11 @@ extension View {
     /// The full-window glass surface for a borderless quick-add popup. The
     /// continuous rounded silhouette keeps the transparent panel's corners
     /// clean; macOS 26 gets the native glass effect while older systems fall
-    /// back to a translucent material with a hairline stroke and a soft
-    /// floating shadow. Content is clipped to the silhouette so nested glass
-    /// pieces never poke past the rounded corners.
+    /// back to a translucent material with a hairline stroke. No SwiftUI
+    /// shadow is applied: the card grows with the content, and a shadow
+    /// re-rendered against the changing silhouette reads as a shimmer at the
+    /// top. Content is clipped to the silhouette so nested glass pieces never
+    /// poke past the rounded corners.
     @ViewBuilder
     func liquidGlassPopup() -> some View {
         let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
@@ -37,7 +39,6 @@ extension View {
                 .background(shape.fill(AppPalette.surfaceFill))
                 .overlay(shape.stroke(AppPalette.controlStroke, lineWidth: 1))
                 .clipShape(shape)
-                .shadow(color: .black.opacity(0.22), radius: 18, y: 8)
         }
     }
 

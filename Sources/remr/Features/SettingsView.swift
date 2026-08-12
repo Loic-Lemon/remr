@@ -59,6 +59,58 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(spacing: 8) {
+                            Image(nsImage: StatusIcon.image(symbol: settings.menuBarIconSymbol,
+                                                            style: settings.menuBarIconStyle,
+                                                            color: settings.menuBarIconColor))
+                                .frame(width: 18, height: 18)
+                            Text("Preview")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Picker("Icon", selection: Binding(
+                            get: { settings.menuBarIconSymbol },
+                            set: { settings.setMenuBarIconSymbol($0) }
+                        )) {
+                            ForEach(MenuBarIconSymbol.allCases) { symbol in
+                                Label(symbol.label, systemImage: symbol.systemName).tag(symbol)
+                            }
+                        }
+                        .pickerStyle(.menu)
+
+                        Picker("Style", selection: Binding(
+                            get: { settings.menuBarIconStyle },
+                            set: { settings.setMenuBarIconStyle($0) }
+                        )) {
+                            ForEach(MenuBarIconStyle.allCases) { style in
+                                Text(style.label).tag(style)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .accessibilityLabel("Menu bar icon style")
+
+                        Text("Automatic matches the menu bar (dark icon in light mode, white in dark mode). Accent colour uses your macOS accent. Custom colour lets you pick any colour.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        if settings.menuBarIconStyle == .custom {
+                            ColorPicker("Colour", selection: Binding(
+                                get: { settings.menuBarIconColor },
+                                set: { settings.setMenuBarIconColor($0) }
+                            ), supportsOpacity: false)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    .padding(.bottom, 16)
+                } header: {
+                    settingsSubheading("Menu Bar Icon")
+                }
+
+                Section {
                     VStack(alignment: .leading, spacing: 18) {
                         ForEach(BindableAction.allCases) { action in
                             bindingRow(for: action)

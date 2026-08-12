@@ -70,7 +70,7 @@ enum NaturalLanguageParser {
         result.hasTime = date.hasTime
         text = date.text
 
-        let location = extractLocation(from: text, unmatchedListCandidate: list.unmatchedCandidate)
+        let location = extractLocation(from: text)
         result.locationPhrase = location.phrase
         text = location.text
 
@@ -603,16 +603,26 @@ enum NaturalLanguageParser {
     private static let trailingAtRegex = try! NSRegularExpression(
         pattern: #"(?:^|\s)(at)\s+(.+)$"#,
         options: [.caseInsensitive])
-    /// Unmatched `@` left in the text by the list pass ("buy milk @the office").
-    private static let trailingAtSignRegex = try! NSRegularExpression(
-        pattern: #"(?:^|\s)@\s*(.+)$"#,
+    /// `&phrase` — the explicit location prefix ("buy milk &the office").
+    private static let trailingAmpRegex = try! NSRegularExpression(
+        pattern: #"(?:^|\s)&\s*(.+)$"#,
         options: [.caseInsensitive])
     private static let placeConnectors: Set<String> = ["at", "near"]
+    /// Words that begin a new clause after a location phrase, ending it:
+    /// "at home i need to do this" → location "home", title "i need to do this".
+    /// Case-insensitive, whole-word. Deliberately excludes "my" (here-phrase
+    /// "my location") and "and"/"or" (handled separately — they can join
+    /// place names like "5th and Main").
+    private static let locationStopWords: Set<String> = [
+        "i", "i'm", "i've", "i'll", "i'd", "you", "we", "they", "he", "she", "it",
+        "and", "or", "but", "then", "so", "also", "because", "after", "before",
+        "when", "while", "please", "thanks", "ok", "okay", "to", "for", "with", "me",
+    ]
+    /// Clause connectors that can instead join place names ("Oak and Pine"):
+    /// only a boundary when the next word is not capitalized.
+    private static let placeJoiningConnectors: Set<String> = ["and", "or"]
 
-    private static func extractLocation(from input: String, unmatchedListCandidate: String?) -> (phrase: String?, text: String) {
-        // The list pass carries this candidate through the location pass. The
-        // final title, rather than the presence of an `@`, determines whether
-        // a warning is emitted after this pass has had a chance to consume it.
+    private static func extractLocation(from input: String) -> (phrase: String?, text: String) {
         var text = input
         let nsText = text as NSString
         let fullRange = NSRange(location: 0, length: nsText.length)
@@ -625,44 +635,107 @@ enum NaturalLanguageParser {
             return (phrase, text)
         }
 
-        if let res = trailingAtRegex.firstMatch(in: text, options: [], range: fullRange) {
-            let raw = nsText.substring(with: res.range(at: 2))
-            let phrase = raw
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .trimmingCharacters(in: CharacterSet(charactersIn: ",.;"))
-            if phrase.count >= 3, phrase.rangeOfCharacter(from: .letters) != nil {
-                text.removeSubrange(nsRangeToRange(res.range, in: text))
-                return (phrase, text)
-            }
+        // "&phrase" — the explicit, unambiguous location prefix. Runs before
+        // the natural-language "at" so "&" is never swallowed by it.
+        if let phrase = Self.extractPrefixedLocation(from: &text, prefix: trailingAmpRegex, rawCapture: 1) {
+            return (phrase, text)
         }
 
-        if let res = trailingAtSignRegex.firstMatch(in: text, options: [], range: fullRange) {
-            // Only when other words precede the @ ("buy milk @the office"): a
-            // line that is just "@phrase" stays a title (unmatched-list
-            // fallback, e.g. "@unknown list task").
-            let prefix = nsText.substring(to: res.range.location)
-            guard prefix.rangeOfCharacter(from: CharacterSet.whitespacesAndNewlines.inverted) != nil else {
-                return (nil, text)
-            }
-            let raw = nsText.substring(with: res.range(at: 1))
-            if let candidate = unmatchedListCandidate {
-                let firstWord = raw.split(whereSeparator: { $0.isWhitespace }).first.map(String.init) ?? ""
-                guard normalize(firstWord) == normalize(candidate) else {
-                    return (nil, text)
-                }
-            }
-            let phrase = raw
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .trimmingCharacters(in: CharacterSet(charactersIn: ",.;"))
-            if phrase.count >= 3, phrase.rangeOfCharacter(from: .letters) != nil {
-                text.removeSubrange(nsRangeToRange(res.range, in: text))
-                return (phrase, text)
-            }
+        // Natural-language "at phrase".
+        if let phrase = Self.extractPrefixedLocation(from: &text, prefix: trailingAtRegex, rawCapture: 2) {
+            return (phrase, text)
         }
         return (nil, text)
     }
 
+    /// Strips "<prefix>phrase" from the end of the line and returns the
+    /// phrase, or nil when the match isn't a valid location. Prefixes: "&"
+    /// (explicit) and "at" (natural language). A quoted phrase (`&"the office
+    /// and grill"`) is taken verbatim — no clause-boundary scanning — so a
+    /// place that contains words like "and"/"with" can be named exactly.
+    private static func extractPrefixedLocation(from text: inout String,
+                                                prefix: NSRegularExpression,
+                                                rawCapture: Int) -> String? {
+        let nsText = text as NSString
+        guard let res = prefix.firstMatch(in: text, options: [],
+                                          range: NSRange(location: 0, length: nsText.length)) else {
+            return nil
+        }
+        let rawRange = nsRangeToRange(res.range(at: rawCapture), in: text)
+        let raw = String(text[rawRange])
+        let stripEnd: String.Index
+        let phrase: String
+        if raw.first == "\"", let closeQuote = raw.dropFirst().firstIndex(of: "\"") {
+            // Quoted: the whole span between the quotes is the location.
+            let content = raw[raw.index(after: raw.startIndex)..<closeQuote]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !content.isEmpty else { return nil }
+            phrase = content
+            stripEnd = text.index(rawRange.lowerBound,
+                                  offsetBy: raw.distance(from: raw.startIndex, to: closeQuote) + 1)
+        } else {
+            // Unquoted: truncate at the first clause boundary.
+            let phraseEnd = Self.locationPhraseEnd(in: raw)
+            phrase = String(raw[..<phraseEnd])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: ",.;"))
+            guard phrase.count >= 3, phrase.rangeOfCharacter(from: .letters) != nil else { return nil }
+            stripEnd = Self.stripEndIndex(raw: raw,
+                                          phraseEnd: phraseEnd,
+                                          rawStart: rawRange.lowerBound,
+                                          in: text)
+        }
+        let stripStart = nsRangeToRange(res.range(at: 0), in: text).lowerBound
+        text.removeSubrange(stripStart..<stripEnd)
+        return phrase
+    }
+
     // MARK: - Helpers
+
+    /// The end of the location phrase inside `raw` (the text after "at"/"&"):
+    /// the first clause-starting word or sentence punctuation, so a location
+    /// in the middle of a sentence ("at home i need to do this") doesn't
+    /// swallow the rest of the line. Returns `raw.endIndex` when the whole
+    /// remainder is the phrase.
+    private static func locationPhraseEnd(in raw: String) -> String.Index {
+        let words = raw.split(whereSeparator: { $0.isWhitespace })
+        for (index, word) in words.enumerated() {
+            let lower = word.lowercased()
+            let isStop = Self.locationStopWords.contains(lower)
+            if isStop, Self.placeJoiningConnectors.contains(lower),
+               index + 1 < words.count,
+               words[index + 1].first?.isUppercase == true {
+                // "5th and Main" / "Oak and Pine" — proper-noun continuation,
+                // part of the place, not a new clause.
+                continue
+            }
+            if isStop { return word.startIndex }
+            // Sentence punctuation ends the phrase. A period is deliberately
+            // not a boundary: it usually marks an abbreviation in places
+            // ("St.", "Ave.") — sentence periods mid-line are rare here.
+            // A standalone dash ("--", "—") separates the location from the
+            // rest of the sentence ("at home -- i need to do this").
+            let hasPunctuation = word.contains(where: { ",;:!?–—".contains($0) })
+                || (!word.isEmpty && word.allSatisfy { $0 == "-" })
+            if hasPunctuation { return word.startIndex }
+        }
+        return raw.endIndex
+    }
+
+    /// End of the strip range: the phrase up to `phraseEnd`, excluding
+    /// inter-word whitespace before a boundary token, so "at home -- x"
+    /// strips "at home" and keeps the space before the "--".
+    private static func stripEndIndex(raw: String,
+                                      phraseEnd: String.Index,
+                                      rawStart: String.Index,
+                                      in text: String) -> String.Index {
+        var offset = raw.distance(from: raw.startIndex, to: phraseEnd)
+        while offset > 0,
+              raw[raw.index(raw.startIndex, offsetBy: offset - 1)].isWhitespace {
+            offset -= 1
+        }
+        return text.index(rawStart, offsetBy: offset)
+    }
 
     private static func normalize(_ s: String) -> String {
         s.lowercased()
