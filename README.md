@@ -7,6 +7,8 @@ A keyboard-first Reminders companion for your macOS menu bar.
 
 Type plain English — `pick up dry cleaning tomorrow at 5pm @errands` — and remr turns it into a real reminder, synced both ways with the Reminders app.
 
+https://github.com/user-attachments/assets/09ed40d6-ada5-4551-8618-8e6bea71c3eb
+
 ## Features
 
 - **Natural-language input** — `tomorrow at 5pm`, `@home`, `#groceries`, `&the office` become real reminder fields
