@@ -100,6 +100,9 @@ final class ReminderStore: ObservableObject {
     @Published private(set) var recentlyDeleted: [DeletedReminder] = []
     /// Time of the most recent completed EventKit refresh.
     @Published private(set) var lastSyncDate: Date?
+    /// Incomplete reminders due before today / within today (menu bar badge).
+    @Published private(set) var overdueCount = 0
+    @Published private(set) var dueTodayCount = 0
 
 
     /// Single shared EventKit store instance (Apple requires one per process).
@@ -225,6 +228,19 @@ final class ReminderStore: ObservableObject {
                     return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
                 }
             }
+            let calendar = Calendar.current
+            let startOfToday = calendar.startOfDay(for: Date())
+            let startOfTomorrow = calendar.date(byAdding: .day, value: 1, to: startOfToday) ?? startOfToday
+            self.overdueCount = self.allReminders.filter { reminder in
+                reminder.dueDateComponents
+                    .flatMap { calendar.date(from: $0) }
+                    .map { $0 < startOfToday } ?? false
+            }.count
+            self.dueTodayCount = self.allReminders.filter { reminder in
+                reminder.dueDateComponents
+                    .flatMap { calendar.date(from: $0) }
+                    .map { $0 >= startOfToday && $0 < startOfTomorrow } ?? false
+            }.count
             self.lastSyncDate = Date()
         }
     }
@@ -499,6 +515,25 @@ final class ReminderStore: ObservableObject {
         }
         let originalDueDate = latest.dueDateComponents
         latest.dueDateComponents = Self.dateComponents(for: date, hasTime: hasTime)
+        do {
+            try store.save(latest, commit: true)
+            refresh()
+        } catch {
+            latest.dueDateComponents = originalDueDate
+            throw error
+        }
+    }
+
+    /// Move a reminder to a new day, preserving its time-of-day (timed) or
+    /// all-day status. Completed reminders are left untouched by callers.
+    func reschedule(_ reminder: EKReminder, to targetDay: Date) async throws {
+        guard let latest = self.reminder(withIdentifier: reminder.calendarItemIdentifier) else {
+            throw ReminderStoreError.reminderNotFound
+        }
+        let originalDueDate = latest.dueDateComponents
+        latest.dueDateComponents = CalendarGridMath.rescheduleComponents(due: originalDueDate,
+                                                                         to: targetDay,
+                                                                         calendar: .current)
         do {
             try store.save(latest, commit: true)
             refresh()

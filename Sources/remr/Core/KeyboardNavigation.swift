@@ -126,6 +126,8 @@ enum KeyboardRouter {
             return .none
         case .quickAdd:
             return .none
+        case .openCalendar:
+            return .none
         }
     }
 }
@@ -138,8 +140,16 @@ enum ListNavigation {
                      deleted: [DeletedReminder], showDeleted: Bool,
                      hidesTabs: Bool = false) -> [NavigableRow] {
         if isSearching {
-            // Recovery tabs are hidden during search.
-            return filtered.map { .reminder($0.calendarItemIdentifier) }
+            // Recovery tabs are hidden during search; completed matches (when
+            // shown) follow the active matches. All of them — no 5-row cap —
+            // because a search is explicitly looking for those reminders.
+            var rows: [NavigableRow] = filtered.map { .reminder($0.calendarItemIdentifier) }
+            if showCompleted {
+                rows.append(contentsOf: completed.map { (r: EKReminder) in
+                    .reminder(r.calendarItemIdentifier)
+                })
+            }
+            return rows
         }
 
         var rows: [NavigableRow] = []
@@ -174,5 +184,18 @@ enum ListNavigation {
         guard count > 0 else { return nil }
         guard let fromIndex else { return delta < 0 ? count - 1 : 0 }
         return min(max(fromIndex + delta, 0), count - 1)
+    }
+
+    /// When `selection` has vanished from `rows` (completed, deleted, synced
+    /// away), return the row that takes its place: the row at the same index
+    /// it occupied in `previous`, else the last remaining row, else nil. A
+    /// selection that is still present is returned unchanged.
+    static func replacement(for selection: NavigableRow,
+                            in rows: [NavigableRow],
+                            previous: [NavigableRow]) -> NavigableRow? {
+        if rows.contains(selection) { return selection }
+        guard let oldIndex = previous.firstIndex(of: selection) else { return nil }
+        if oldIndex < rows.count { return rows[oldIndex] }
+        return rows.last
     }
 }

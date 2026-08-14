@@ -64,7 +64,7 @@ struct GuideView: View {
                     }
                     GuideSection(title: "Manage") {
                         GuideRow(example: "Tick the circle", explanation: "Mark complete (Undo is available for five seconds)")
-                        GuideRow(example: "Click a row", explanation: "Selects it; click again to open in Reminders")
+                        GuideRow(example: "Click a row", explanation: "Selects it; double-click to edit in place")
                         GuideRow(example: "Sections", explanation: "Overdue · Today · This Week · Next Week · This Month · Next Month · Future")
                         GuideRow(example: "Right-click a row", explanation: "Complete, edit, snooze, open, or delete")
                         GuideRow(example: "Move to List", explanation: "Move the reminder without opening Reminders")
@@ -83,6 +83,7 @@ struct GuideView: View {
             .scrollIndicators(.hidden)
         }
         .frame(width: 340, height: 430)
+        .liquidGlassGrouping()
     }
 }
 
@@ -112,16 +113,14 @@ private struct GuideSection<Content: View>: View {
         }
     }
 
-    @ViewBuilder
+    /// Heading strips sit BEHIND small caption text, and Liquid Glass lensing
+    /// renders text caught in its sampling region blurry. These headings use
+    /// plain vibrancy on macOS 26 too: sharp text, still a subtle separation
+    /// from scrolled content. (Text inside a glass view — fields, chips — is
+    /// composited on top of the glass and stays sharp.)
     private var sectionHeadingBackdrop: some View {
-        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
-        if #available(macOS 26.0, *) {
-            shape
-                .fill(.clear)
-                .glassEffect(.regular.tint(AppPalette.controlTint), in: shape)
-        } else {
-            shape.fill(.ultraThinMaterial)
-        }
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(.ultraThinMaterial)
     }
 }
 

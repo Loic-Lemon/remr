@@ -15,14 +15,15 @@ final class SnoozeSurfaceTests: XCTestCase {
             ("Later today", .laterToday),
             ("Tomorrow morning", .tomorrowMorning),
             ("Tomorrow evening", .tomorrowEvening),
-            ("Next Monday", .nextMonday)
+            ("Next Monday", .nextMonday),
+            ("This weekend", .thisWeekend)
         ]
 
         orderedChoices.forEach { menu.onChoice($0.choice) }
 
         XCTAssertEqual(
             orderedChoices.map(\.label),
-            ["1 hour", "Later today", "Tomorrow morning", "Tomorrow evening", "Next Monday"]
+            ["1 hour", "Later today", "Tomorrow morning", "Tomorrow evening", "Next Monday", "This weekend"]
         )
         XCTAssertEqual(emitted, orderedChoices.map(\.choice))
     }

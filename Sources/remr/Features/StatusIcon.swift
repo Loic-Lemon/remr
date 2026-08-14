@@ -23,27 +23,35 @@ enum StatusIcon {
     /// preview in Settings.
     static func image(symbol: MenuBarIconSymbol,
                       style: MenuBarIconStyle,
-                      color: Color) -> NSImage {
+                      color: Color,
+                      badge: MenuBarIconBadge = .none,
+                      count: Int = 0) -> NSImage {
         let base = NSImage(systemSymbolName: symbol.systemName,
                            accessibilityDescription: "remr")
             ?? NSImage(systemSymbolName: "bell", accessibilityDescription: "remr")
             ?? NSImage()
+        let icon: NSImage
         switch style {
         case .automatic:
-            return normalized(base, isTemplate: true)
+            icon = normalized(base, isTemplate: true)
         case .accent:
-            return normalized(tinted(base, with: accentColor), isTemplate: false)
+            icon = normalized(tinted(base, with: accentColor), isTemplate: false)
         case .custom:
-            return normalized(tinted(base, with: NSColor(color)), isTemplate: false)
+            icon = normalized(tinted(base, with: NSColor(color)), isTemplate: false)
         }
+        guard badge != .none && count > 0 else { return icon }
+        return badged(icon, count: count, isTemplate: icon.isTemplate)
     }
 
     /// Apply the current icon settings to a status button.
     static func apply(to button: NSStatusBarButton,
                       symbol: MenuBarIconSymbol,
                       style: MenuBarIconStyle,
-                      color: Color) {
-        button.image = image(symbol: symbol, style: style, color: color)
+                      color: Color,
+                      badge: MenuBarIconBadge = .none,
+                      count: Int = 0) {
+        button.image = image(symbol: symbol, style: style, color: color,
+                             badge: badge, count: count)
     }
 
     /// The macOS accent colour resolved against the current appearance and
@@ -82,5 +90,39 @@ enum StatusIcon {
         canvas.isTemplate = isTemplate
         canvas.accessibilityDescription = image.accessibilityDescription
         return canvas
+    }
+
+    /// Overlay a count disc on the top-right corner of the canvas.
+    ///
+    /// The composite keeps the base's template state. For Automatic the disc
+    /// stays a template: the system tints it with the menu bar foreground and
+    /// punches the digits out to the menu bar background, so the badge adapts
+    /// to light and dark menu bars. Accent and Custom styles bake red-on-white
+    /// as drawn.
+    private static func badged(_ base: NSImage, count: Int, isTemplate: Bool) -> NSImage {
+        let composite = NSImage(size: canvasSize, flipped: false) { rect in
+            base.draw(in: rect)
+
+            let center = NSPoint(x: rect.width - 6, y: rect.height - 6)
+            let radius: CGFloat = 5.5
+            let circleRect = NSRect(x: center.x - radius, y: center.y - radius,
+                                    width: radius * 2, height: radius * 2)
+            NSColor.systemRed.setFill()
+            NSBezierPath(ovalIn: circleRect).fill()
+
+            let text: NSString = (count > 9 ? "9+" : "\(count)") as NSString
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 8, weight: .bold),
+                .foregroundColor: NSColor.white
+            ]
+            let textSize = text.size(withAttributes: attributes)
+            text.draw(at: NSPoint(x: center.x - textSize.width / 2,
+                                  y: center.y - textSize.height / 2),
+                      withAttributes: attributes)
+            return true
+        }
+        composite.isTemplate = isTemplate
+        composite.accessibilityDescription = base.accessibilityDescription
+        return composite
     }
 }

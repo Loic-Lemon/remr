@@ -5,6 +5,10 @@ struct ActionToast: View {
     let message: String
     let actionTitle: String?
     let action: (() -> Void)?
+    /// Content-swap animation state, applied to the inner content only — the
+    /// pill shell stays put while replacements roll out and in.
+    var contentOffset: CGFloat = 0
+    var contentOpacity: Double = 1
 
     var body: some View {
         HStack(spacing: 10) {
@@ -18,13 +22,12 @@ struct ActionToast: View {
                     .buttonStyle(.plain)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 3)
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .strokeBorder(.secondary.opacity(0.55), lineWidth: 1)
-                    }
+                    .liquidGlassCapsule()
             }
         }
         .font(.callout.weight(.medium))
+        .offset(y: contentOffset)
+        .opacity(contentOpacity)
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
         .liquidGlassToast()

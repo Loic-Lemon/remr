@@ -246,6 +246,7 @@ struct LegacyKeyCombo: Codable {
 enum BindableAction: String, CaseIterable, Identifiable {
     case togglePopover   // "Open remr from anywhere" — global Carbon hotkey
     case quickAdd = "quickAdd" // "Quick add reminder" — global Carbon hotkey
+    case openCalendar    // "Open calendar view" — global Carbon hotkey
     case focusSearch     // "Focus search"
     case moveDown        // "Move selection down"
     case moveUp          // "Move selection up"
@@ -265,7 +266,7 @@ enum BindableAction: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     /// Whether this action is registered as a Carbon global hotkey.
     var isGlobalHotkey: Bool {
-        self == .togglePopover || self == .quickAdd
+        self == .togglePopover || self == .quickAdd || self == .openCalendar
     }
 
 
@@ -273,6 +274,7 @@ enum BindableAction: String, CaseIterable, Identifiable {
         switch self {
         case .togglePopover: return "Open remr from anywhere"
         case .quickAdd: return "Quick add reminder"
+        case .openCalendar: return "Open calendar view"
         case .focusSearch: return "Focus search"
         case .moveDown: return "Move selection down"
         case .moveUp: return "Move selection up"
@@ -300,6 +302,7 @@ enum DefaultBindings {
     static let all: [BindableAction: KeyCombo] = [
         .togglePopover: KeyCombo([.modifier(.option), .modifier(.command), .key(UInt16(kVK_ANSI_R))]), // ⌥⌘R
         .quickAdd:      KeyCombo([.modifier(.option), .modifier(.command), .key(UInt16(kVK_ANSI_N))]), // ⌥⌘N
+        .openCalendar:  KeyCombo([.modifier(.option), .modifier(.command), .key(UInt16(kVK_ANSI_C))]), // ⌥⌘C
         .focusSearch:   KeyCombo([.modifier(.command), .key(UInt16(kVK_ANSI_F))]),                      // ⌘F
         .moveDown:      KeyCombo([.key(125)]),                                                         // ↓
         .moveUp:        KeyCombo([.key(126)]),                                                         // ↑

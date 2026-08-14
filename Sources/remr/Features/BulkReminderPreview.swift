@@ -173,16 +173,18 @@ struct BulkReminderPreview: View {
                     .font(.headline)
                 Spacer()
                 Button("Cancel", action: onCancel)
+                    .liquidGlassButtonStyle(.bordered)
                     .disabled(isProcessing)
                 if hasCreatedRow {
                     Button("Done", action: onDone)
+                        .liquidGlassButtonStyle(.bordered)
                         .keyboardShortcut(.defaultAction)
                 }
                 Button("Create Selected") {
                     createSelected()
                 }
+                .liquidGlassButtonStyle(.borderedProminent, prominent: true)
                 .disabled(!canCreateSelected || isProcessing)
-                .buttonStyle(.borderedProminent)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
@@ -373,11 +375,7 @@ struct BulkReminderPreview: View {
                 structuredFields
             }
             .padding(10)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-            .overlay {
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.secondary.opacity(0.18))
-            }
+            .liquidGlassField(in: RoundedRectangle(cornerRadius: 8))
         }
 
         private var titleBinding: Binding<String> {
@@ -445,7 +443,7 @@ struct BulkReminderPreview: View {
                         .font(.caption2)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 2)
-                        .background(TagStore.shared.color(for: tag).opacity(0.25), in: Capsule())
+                        .liquidGlassChip(tint: TagStore.shared.color(for: tag))
                 }
             }
             .foregroundStyle(.secondary)
@@ -465,7 +463,7 @@ struct BulkReminderPreview: View {
                 .font(.caption2)
                 .padding(.horizontal, 5)
                 .padding(.vertical, 2)
-                .background(Color.secondary.opacity(0.12), in: Capsule())
+                .liquidGlassChip()
         }
 
         @ViewBuilder
@@ -504,7 +502,7 @@ struct BulkReminderPreview: View {
                         .multilineTextAlignment(.trailing)
                         .foregroundStyle(.red)
                     Button("Retry", action: onRetry)
-                        .buttonStyle(.bordered)
+                        .liquidGlassButtonStyle(.bordered)
                 }
             }
         }

@@ -82,6 +82,7 @@ struct TagManagerView: View {
         }
         .frame(width: 340, height: 390)
         .disabled(isWorking)
+        .liquidGlassGrouping()
         .confirmationDialog(
             "Remove #\(pendingDelete ?? "")?",
             isPresented: Binding(
@@ -160,7 +161,7 @@ struct TagManagerView: View {
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 7)
-        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .liquidGlassField(in: RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 
     private func colorMenu(for tag: String) -> some View {

@@ -9,7 +9,6 @@ import SwiftUI
 /// for anything invalid; nothing persists until every draft is valid.
 struct SettingsView: View {
     @EnvironmentObject var settings: SettingsStore
-    @Environment(\.colorScheme) private var inheritedColorScheme
 
     /// Called by the inline "Back" button when Settings is rendered inside the
     /// main popover (MainView). nil in the standalone ⌘, Settings scene.
@@ -22,6 +21,7 @@ struct SettingsView: View {
     /// The block currently being captured: `index == nil` appends a new block,
     /// otherwise the block at `index` is replaced.
     @State private var capture: (action: BindableAction, index: Int?)?
+    @State private var showFeatureInventory = false
 
     /// The combo a row displays: the draft when one exists, else the saved one.
     private func combo(for action: BindableAction) -> KeyCombo {
@@ -63,7 +63,9 @@ struct SettingsView: View {
                         HStack(spacing: 8) {
                             Image(nsImage: StatusIcon.image(symbol: settings.menuBarIconSymbol,
                                                             style: settings.menuBarIconStyle,
-                                                            color: settings.menuBarIconColor))
+                                                            color: settings.menuBarIconColor,
+                                                            badge: settings.menuBarIconBadge,
+                                                            count: settings.menuBarIconBadge == .none ? 0 : 3))
                                 .frame(width: 18, height: 18)
                             Text("Preview")
                                 .font(.caption)
@@ -91,7 +93,18 @@ struct SettingsView: View {
                         .pickerStyle(.segmented)
                         .accessibilityLabel("Menu bar icon style")
 
-                        Text("Automatic matches the menu bar (dark icon in light mode, white in dark mode). Accent colour uses your macOS accent. Custom colour lets you pick any colour.")
+                        Picker("Badge", selection: Binding(
+                            get: { settings.menuBarIconBadge },
+                            set: { settings.setMenuBarIconBadge($0) }
+                        )) {
+                            ForEach(MenuBarIconBadge.allCases) { badge in
+                                Text(badge.label).tag(badge)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .accessibilityLabel("Menu bar icon badge")
+
+                        Text("Automatic matches the menu bar (dark icon in light mode, white in dark mode). Accent colour uses your macOS accent. Custom colour lets you pick any colour. Badge shows the count of incomplete reminders that are overdue (or due today).")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -153,6 +166,24 @@ struct SettingsView: View {
                     .font(.callout)
                 }
                 .padding(16)
+
+                HStack {
+                    Spacer()
+                    Button {
+                        showFeatureInventory = true
+                    } label: {
+                        Label("Feature inventory", systemImage: "list.bullet.rectangle")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.accentColor)
+                    .font(.caption)
+                    .popover(isPresented: $showFeatureInventory, arrowEdge: .bottom) {
+                        FeatureInventoryView()
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 12)
             }
         }
         .scrollIndicators(.hidden)
@@ -168,11 +199,13 @@ struct SettingsView: View {
         // Keep the theme local to this view hierarchy. Unlike
         // preferredColorScheme, this does not reconfigure the presentation or
         // replace the inline Settings view when the picker changes.
-        .environment(\.colorScheme, settings.appearance.colorScheme ?? inheritedColorScheme)
+        .remrAppearance(using: settings)
         .onDisappear {
             capture = nil
             settings.isCapturing = false
+            showFeatureInventory = false
         }
+        .liquidGlassGrouping()
     }
 
     private var settingsHeading: some View {
@@ -199,19 +232,14 @@ struct SettingsView: View {
         .zIndex(1)
     }
 
-    /// Translucent glass keeps scrolled text from showing through the pinned
-    /// labels without painting an opaque panel over the popover surface.
-    @ViewBuilder
+    /// A translucent-but-opaque strip that keeps scrolled content (notably the
+    /// keycap chips) from bleeding through the pinned top bar and section
+    /// headers. `.regularMaterial` is the macOS sticky-header material: more
+    /// opaque than ultraThin so chips read as passing *under* the bar rather
+    /// than merging with it, without painting a solid panel over the glass.
     private var settingsHeaderBackdrop: some View {
-        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
-        if #available(macOS 26.0, *) {
-            shape
-                .fill(.clear)
-                .glassEffect(.regular.tint(AppPalette.controlTint), in: shape)
-        } else {
-            shape
-                .fill(.ultraThinMaterial)
-        }
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(.regularMaterial)
     }
 
     /// Compact pinned chrome shared by every settings subsection. Keeping the

@@ -2,29 +2,57 @@ import EventKit
 import SwiftUI
 
 /// Shared reminder row: completion toggle, title, meta line
-/// (list color dot + list name + due label, priority "!", location pin).
-/// Clicking the text area opens the reminder in Reminders.app.
+/// (list color dot + list name + due label, priority "!", location pin,
+/// recurrence summary).
+/// Single-click selects; double-clicking opens the reminder in Reminders.app.
 struct ReminderRowView: View {
     @EnvironmentObject var store: ReminderStore
     let reminder: EKReminder
-    /// Keyboard-selection highlight (accent fill, same as the suggestion dropdown).
+    /// Keyboard/mouse-selection highlight (accent fill, same as the suggestion dropdown).
     var isSelected: Bool = false
-    /// Called when the row is clicked while not selected (first click selects,
-    /// second click opens in Reminders).
+    /// Called when the row is single-clicked while unselected (selects it).
     var onSelect: (() -> Void)? = nil
+    /// Called when the row is double-clicked (opens it in Reminders.app).
+    var onOpen: (() -> Void)? = nil
     /// MainView owns every EventKit mutation so completion and deletion share
-    /// the same error/recovery behavior as keyboard actions.
-    var onToggleCompletion: ((EKReminder) -> Void)? = nil
+    /// the same error/recovery behavior as keyboard actions. The second
+    /// argument fires once the mutation has settled (success or failure), so
+    /// the row can clear its tick state; on success the row keeps its checked
+    /// appearance because the reminder's own `isCompleted` is now true.
+    var onToggleCompletion: ((EKReminder, @escaping () -> Void) -> Void)? = nil
     var onDelete: ((EKReminder) -> Void)? = nil
     var onEdit: ((EKReminder) -> Void)? = nil
     var onSnooze: ((EKReminder) -> Void)? = nil
     var onDuplicate: ((EKReminder) -> Void)? = nil
     var onMoveToList: ((EKReminder, String?) -> Void)? = nil
     var onCopyTitle: ((EKReminder) -> Void)? = nil
+    @State private var isHovered = false
+    /// True while the completion tick is playing; gates re-entry and drives
+    /// the circle fill/checkmark animation before the store mutation.
+    @State private var isCompleting = false
 
     private func toggleComplete() {
-        onToggleCompletion?(reminder)
+        guard !isCompleting else { return }
+        if reminder.isCompleted {
+            // Restoring: no tick, hand straight off.
+            onToggleCompletion?(reminder, {})
+        } else {
+            // Play the tick (fill + checkmark draw), then hand off; the reset
+            // closure fires once the store mutation settles either way.
+            isCompleting = true
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                onToggleCompletion?(reminder) {
+                    self.isCompleting = false
+                }
+            }
+        }
     }
+
+    /// The circle's checked appearance: either already completed in the data,
+    /// or mid-tick.
+    private var showCompleted: Bool { reminder.isCompleted || isCompleting }
+    private var checkmarkProgress: CGFloat { showCompleted ? 1 : 0 }
 
     private var hasLocation: Bool {
         reminder.alarms?.contains { $0.structuredLocation != nil } ?? false
@@ -47,6 +75,28 @@ struct ReminderRowView: View {
         NaturalLanguageParser.isOngoing(title: reminder.title, notes: reminder.notes)
     }
 
+    /// "Repeats weekly", "Repeats every 2 weeks", … from a recurrence rule.
+    /// Rules set in Reminders.app surface here; remr doesn't create them yet.
+    private var recurrenceSummary: String? {
+        reminder.recurrenceRules?.first.flatMap(Self.recurrenceSummary(for:))
+    }
+
+    /// Formats a single recurrence rule; nil for unknown frequencies.
+    static func recurrenceSummary(for rule: EKRecurrenceRule) -> String? {
+        switch rule.frequency {
+        case .daily:
+            return rule.interval == 1 ? "Repeats daily" : "Repeats every \(rule.interval) days"
+        case .weekly:
+            return rule.interval == 1 ? "Repeats weekly" : "Repeats every \(rule.interval) weeks"
+        case .monthly:
+            return rule.interval == 1 ? "Repeats monthly" : "Repeats every \(rule.interval) months"
+        case .yearly:
+            return rule.interval == 1 ? "Repeats yearly" : "Repeats every \(rule.interval) years"
+        @unknown default:
+            return nil
+        }
+    }
+
 
     private var isOverdue: Bool {
         guard let due = Calendar.current.date(from: reminder.dueDateComponents ?? DateComponents()) else { return false }
@@ -59,21 +109,30 @@ struct ReminderRowView: View {
                 toggleComplete()
             } label: {
                 // Drawn circle (not an SF Symbol) so it is geometrically round
-                // at any size — same as Reminders.app's circle.
+                // at any size — same as Reminders.app's circle. On completion
+                // the fill sweeps to accent and the checkmark draws itself in.
                 ZStack {
                     Circle()
-                        .fill(reminder.isCompleted ? Color.accentColor : Color.clear)
+                        .fill(showCompleted ? Color.accentColor : Color.clear)
                     Circle()
-                        .stroke(reminder.isCompleted ? Color.clear : Color.secondary.opacity(0.7), lineWidth: 1.5)
-                    if reminder.isCompleted {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(.white)
+                        .stroke(showCompleted
+                                ? Color.clear
+                                : (isSelected ? Color.accentColor : Color.secondary.opacity(0.7)),
+                                lineWidth: 1.5)
+                    if showCompleted {
+                        CheckmarkShape()
+                            .trim(from: 0, to: checkmarkProgress)
+                            .stroke(Color.white,
+                                    style: StrokeStyle(lineWidth: 1.7,
+                                                       lineCap: .round,
+                                                       lineJoin: .round))
+                            .animation(.easeOut(duration: 0.14), value: checkmarkProgress)
                     }
                 }
                 .frame(width: 16, height: 16)
                 .contentShape(Circle())
                 .frame(width: 22, height: 22)
+                .animation(.easeOut(duration: 0.1), value: showCompleted)
             }
             .buttonStyle(.plain)
             .help(reminder.isCompleted ? "Mark as not completed" : "Mark as completed")
@@ -90,24 +149,25 @@ struct ReminderRowView: View {
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
-            if isSelected {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.accentColor.opacity(0.16))
-                    .overlay(RoundedRectangle(cornerRadius: 6)
-                        .strokeBorder(Color.accentColor.opacity(0.45), lineWidth: 1))
-            }
+            rowSelectionHighlight(selected: isSelected, hovered: isHovered)
         }
         .contentShape(Rectangle())
-        // First click selects the row (showing the highlight); clicking the
-        // selected row again opens it in Reminders. Buttons (completion
-        // circle, tag chips) consume their own taps, so they never
-        // double-fire this gesture.
+        .animation(.easeOut(duration: 0.12), value: isSelected)
+        .animation(.easeOut(duration: 0.1), value: isHovered)
+        // Single click selects an unselected row (clicking the selected row
+        // again keeps the selection — no accidental open). Double-click opens
+        // the reminder in Reminders. Buttons (completion circle, tag chips)
+        // consume their own taps, so they never double-fire these gestures.
         .onTapGesture {
-            if isSelected {
-                store.openInReminders(reminder)
-            } else {
+            if !isSelected {
                 onSelect?()
             }
+        }
+        .simultaneousGesture(TapGesture(count: 2).onEnded {
+            onOpen?()
+        })
+        .onHover { hovering in
+            isHovered = hovering
         }
         .contextMenu {
             Button(reminder.isCompleted ? "Mark as Not Completed" : "Mark as Completed") {
@@ -174,10 +234,25 @@ struct ReminderRowView: View {
                     }
                 }
             }
+            if let recurrenceSummary {
+                Text("·")
+                Image(systemName: "arrow.clockwise")
+                    .font(.caption2)
+                Text(recurrenceSummary)
+                    .lineLimit(1)
+            }
             if reminder.priority == 1 {
                 Text("!")
                     .font(.caption.bold())
                     .foregroundStyle(.red)
+            } else if reminder.priority == 5 {
+                Text("!")
+                    .font(.caption.bold())
+                    .foregroundStyle(.orange)
+            } else if reminder.priority == 9 {
+                Text("!")
+                    .font(.caption.bold())
+                    .foregroundStyle(.secondary)
             }
             if hasLocation {
                 Image(systemName: "mappin")
@@ -223,7 +298,7 @@ struct ReminderRowView: View {
                 }
                 .padding(.horizontal, 5)
                 .padding(.vertical, 1)
-                .background(RoundedRectangle(cornerRadius: 3).fill(color))
+                .liquidGlassChip(in: RoundedRectangle(cornerRadius: 3), tint: color, filled: true)
                 .overlay {
                     if isActive {
                         RoundedRectangle(cornerRadius: 3)
@@ -275,5 +350,17 @@ struct ReminderRowView: View {
         default:
             return due.formatted(date: .abbreviated, time: .omitted)
         }
+    }
+}
+
+/// The completion checkmark as a stroked path so it can draw itself in via
+/// `trim` during the completion tick.
+struct CheckmarkShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.width * 0.22, y: rect.height * 0.52))
+        path.addLine(to: CGPoint(x: rect.width * 0.42, y: rect.height * 0.72))
+        path.addLine(to: CGPoint(x: rect.width * 0.8, y: rect.height * 0.28))
+        return path
     }
 }

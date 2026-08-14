@@ -46,10 +46,9 @@ struct FastPopoverPresenter: NSViewRepresentable {
                 let popover = self.popover ?? makePopover(content: content)
                 self.popover = popover
                 if let hosting = popover.contentViewController as? NSHostingController<AnyView> {
-                    hosting.rootView = content
+                    hosting.rootView = appearanceAwareContent(content)
                 }
                 installMonitors()
-                popover.contentViewController?.view.window?.alphaValue = 1
                 applyAppearance(to: popover)
 
                 guard !popover.isShown, let anchor, !anchor.bounds.isEmpty else { return }
@@ -57,7 +56,6 @@ struct FastPopoverPresenter: NSViewRepresentable {
                     guard let self, let popover, let anchor,
                           !popover.isShown, !anchor.bounds.isEmpty else { return }
                     popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
-                    popover.contentViewController?.view.window?.alphaValue = 1
                     self.applyAppearance(to: popover)
                 }
             } else if let popover, popover.isShown, !isClosing {
@@ -68,10 +66,14 @@ struct FastPopoverPresenter: NSViewRepresentable {
         private func makePopover(content: AnyView) -> NSPopover {
             let popover = NSPopover()
             popover.behavior = .applicationDefined
-            popover.animates = false
+            popover.animates = true
             popover.delegate = self
-            popover.contentViewController = NSHostingController(rootView: content)
+            popover.contentViewController = NSHostingController(rootView: appearanceAwareContent(content))
             return popover
+        }
+        private func appearanceAwareContent(_ content: AnyView) -> AnyView {
+            let settings = MainActor.assumeIsolated { SettingsStore.shared }
+            return AnyView(content.remrAppearance(using: settings))
         }
 
         private func applyAppearance(to popover: NSPopover) {

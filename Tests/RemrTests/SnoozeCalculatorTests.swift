@@ -73,6 +73,34 @@ final class SnoozeCalculatorTests: XCTestCase {
                      expected: date(2026, 8, 17, 9))
     }
 
+    func testThisWeekendFromFridayTargetsSaturday() {
+        let now = date(2026, 8, 14, 14) // Friday
+        assertChoice(.thisWeekend,
+                     now: now,
+                     expected: date(2026, 8, 15, 9))
+    }
+
+    func testThisWeekendFromSaturdayTargetsSunday() {
+        let now = date(2026, 8, 15, 8) // Saturday
+        assertChoice(.thisWeekend,
+                     now: now,
+                     expected: date(2026, 8, 16, 9))
+    }
+
+    func testThisWeekendFromSundayTargetsNextSaturday() {
+        let now = date(2026, 8, 16, 10) // Sunday
+        assertChoice(.thisWeekend,
+                     now: now,
+                     expected: date(2026, 8, 22, 9))
+    }
+
+    func testThisWeekendFromSaturdayCrossesMonthBoundary() {
+        let now = date(2026, 1, 31, 12) // Saturday
+        assertChoice(.thisWeekend,
+                     now: now,
+                     expected: date(2026, 2, 1, 9))
+    }
+
     func testDayArithmeticSurvivesSpringForward() {
         // At 01:30, adding one elapsed hour crosses the missing 02:00 hour.
         let now = date(2026, 3, 8, 1, 30)

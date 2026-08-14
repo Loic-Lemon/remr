@@ -4,12 +4,13 @@ import SwiftUI
 struct DeletedReminderRow: View {
     @EnvironmentObject var store: ReminderStore
     let deleted: DeletedReminder
-    /// Keyboard-selection highlight (accent fill, same as the suggestion dropdown).
+    /// Keyboard/mouse-selection highlight (same glass treatment as the main list rows).
     var isSelected: Bool = false
     var onRestored: (() -> Void)? = nil
     var onDeletedForever: (() -> Void)? = nil
     @State private var restoreError: String?
     @State private var confirmDeleteForever = false
+    @State private var isHovered = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -34,7 +35,7 @@ struct DeletedReminderRow: View {
                         }
                     }
                 }
-                .buttonStyle(.bordered)
+                .liquidGlassButtonStyle(.bordered)
                 .controlSize(.small)
                 Button {
                     confirmDeleteForever = true
@@ -57,12 +58,14 @@ struct DeletedReminderRow: View {
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
-            if isSelected {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.accentColor.opacity(0.16))
-            }
+            rowSelectionHighlight(selected: isSelected, hovered: isHovered)
         }
         .contentShape(Rectangle())
+        .onHover { hovering in
+            isHovered = hovering
+        }
+        .animation(.easeOut(duration: 0.12), value: isSelected)
+        .animation(.easeOut(duration: 0.1), value: isHovered)
         .confirmationDialog("Delete Forever?", isPresented: $confirmDeleteForever,
                             titleVisibility: .visible) {
             Button("Delete Forever", role: .destructive) {

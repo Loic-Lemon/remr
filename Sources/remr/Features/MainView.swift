@@ -2,6 +2,12 @@ import AppKit
 import EventKit
 import SwiftUI
 
+extension Notification.Name {
+    /// Posted (userInfo ["id": calendarItemIdentifier]) when the calendar asks
+    /// the main popover to show a reminder's detail page.
+    static let remrShowReminderDetail = Notification.Name("remr.showReminderDetail")
+}
+
 /// The single-page popover: add a reminder on top, search below it,
 /// and the unified reminder list beneath that.
 struct MainView: View {
@@ -14,12 +20,22 @@ struct MainView: View {
     @State private var showSettings = false
     @State private var bulkInput: String?
     @State private var editingReminder: EKReminder?
+    /// Read-only detail page (double-click target); Edit hands off to the editor.
+    @State private var viewingReminder: EKReminder?
     @State private var snoozingReminder: EKReminder?
     @State private var snoozeShowingPicker = false
     @State private var confirmDeleteForever = false
     @State private var pendingDeleteForever: DeletedReminder?
     @State private var actionToast: ActionToastState?
     @State private var actionToastTask: Task<Void, Never>?
+    /// Animates the toast's rise and fade. Flipped with `withAnimation` from
+    /// an explicit Task (never from `onAppear`/transitions, which don't
+    /// animate on macOS) so the appearance is a guaranteed vertical rise.
+    @State private var toastPresented = false
+    /// Content-swap animation for replacing toasts (Undo → Undid and back):
+    /// the old content rolls out, the new content rolls in from below.
+    @State private var toastContentOffset: CGFloat = 0
+    @State private var toastContentOpacity: Double = 1
 
     private struct ActionToastState {
         let message: String
@@ -38,6 +54,10 @@ struct MainView: View {
 
     // Keyboard-first navigation (plan Step 4).
     @State private var selection: NavigableRow?
+    /// The navRows snapshot from the last render, used to find where a
+    /// vanished selection used to sit (so completion/deletion can hand the
+    /// selection to the row that took its place).
+    @State private var previousNavRows: [NavigableRow] = []
     @State private var titleFocusRequest = 0
     @State private var showTagFilter = false
     @State private var showTagManager = false
@@ -79,13 +99,32 @@ struct MainView: View {
         }
     }
 
+    /// The parsed search query, nil while the search field is empty.
+    private var searchQuery: SearchQuery? {
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return SearchParser.parse(trimmed)
+    }
+
+    /// The search query applied to a reminder pool (ANDed with the tag filter
+    /// wherever the caller applies it).
+    private func searchMatches(_ reminders: [EKReminder]) -> [EKReminder] {
+        guard let query = searchQuery else { return [] }
+        let titles = Dictionary(uniqueKeysWithValues: store.reminderCalendars().map { ($0.calendarIdentifier, $0.title) })
+        return reminders.filter { SearchParser.matches($0, query: query, calendarTitles: titles) }
+    }
+
     private var filteredItems: [EKReminder] {
         let byTag = filtered(allItems)
-        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return byTag }
-        let query = SearchParser.parse(trimmed)
-        let titles = Dictionary(uniqueKeysWithValues: store.reminderCalendars().map { ($0.calendarIdentifier, $0.title) })
-        return byTag.filter { SearchParser.matches($0, query: query, calendarTitles: titles) }
+        return searchQuery == nil ? byTag : searchMatches(byTag)
+    }
+
+    /// Completed reminders matching the search (tag filter applied). Search is
+    /// the only path that surfaces completed items in the main list — Recovery
+    /// remains the browsing surface.
+    private var searchCompletedItems: [EKReminder] {
+        guard searchQuery != nil else { return [] }
+        return filtered(searchMatches(store.completedReminders))
     }
 
     /// Every incomplete reminder bucketed into the pinned ongoing section or
@@ -151,8 +190,8 @@ struct MainView: View {
         ListNavigation.rows(sections: sections,
                             filtered: filteredItems,
                             isSearching: isSearching,
-                            completed: [],
-                            showCompleted: false,
+                            completed: isSearching ? searchCompletedItems : [],
+                            showCompleted: isSearching,
                             deleted: [],
                             showDeleted: false,
                             hidesTabs: isFiltering)
@@ -162,6 +201,13 @@ struct MainView: View {
         Group {
             if showSettings {
                 SettingsView(onClose: { showSettings = false })
+            } else if let viewingReminder {
+                ReminderDetailView(reminder: viewingReminder,
+                                   onClose: { self.viewingReminder = nil },
+                                   onEdit: { reminder in
+                                       self.viewingReminder = nil
+                                       self.editingReminder = reminder
+                                   })
             } else if let editingReminder {
                 ReminderEditView(reminder: editingReminder,
                                  onCancel: { self.editingReminder = nil },
@@ -226,10 +272,11 @@ struct MainView: View {
             }
         }
         .onAppear {
+            previousNavRows = navRows
             if popoverWindow == nil { popoverWindow = NSApp.keyWindow }
             monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { event in
                 if settings.isCapturing { return event }
-                if showSettings || editingReminder != nil || bulkInput != nil || snoozingReminder != nil {
+                if showSettings || viewingReminder != nil || editingReminder != nil || bulkInput != nil || snoozingReminder != nil {
                     return event
                 }
                 guard let eventWindow = event.window else { return event }
@@ -297,6 +344,18 @@ struct MainView: View {
             }
             knownReminderIDs = ids
         }
+        .onChange(of: navRows) { rows in
+            // A selected row can vanish from the list (completed, deleted,
+            // synced away). Hand the selection to the row that took its
+            // place instead of leaving a phantom selection that highlights
+            // nothing while keyboard actions silently no-op. Search/filter
+            // changes reset the selection in their own onChanges.
+            guard let selection else { previousNavRows = rows; return }
+            self.selection = ListNavigation.replacement(for: selection,
+                                                        in: rows,
+                                                        previous: previousNavRows)
+            previousNavRows = rows
+        }
         .onDisappear {
             if let monitor { NSEvent.removeMonitor(monitor) }
             monitor = nil
@@ -305,6 +364,16 @@ struct MainView: View {
             heldKeys = []
             firedKeys = nil
             actionToastTask?.cancel()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .remrShowReminderDetail)) { note in
+            // Calendar double-click handoff: show the detail page for the
+            // reminder id (posted by AppDelegate before the popover opens).
+            guard let id = note.userInfo?["id"] as? String,
+                  let reminder = (store.allReminders + store.completedReminders)
+                    .first(where: { $0.calendarItemIdentifier == id }) else { return }
+            showSettings = false
+            editingReminder = nil
+            viewingReminder = reminder
         }
         .background(WindowProbe { popoverWindow = $0 })
         .confirmationDialog("Delete Forever?", isPresented: $confirmDeleteForever,
@@ -323,7 +392,7 @@ struct MainView: View {
         }
     }
 
-    /// Search field (gray rounded capsule) + the (i) guide button.
+    /// Search field and adjacent actions share the compact glass toolbar.
     private var searchRow: some View {
         HStack(spacing: 8) {
             HStack(spacing: 6) {
@@ -345,9 +414,9 @@ struct MainView: View {
                     .help("Clear search")
                 }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .liquidGlassField()
+            .padding(.horizontal, 11)
+            .frame(minHeight: 30)
+            .liquidGlassField(in: Capsule())
             TagFilterMenu(allTags: allTags,
                           tagCounts: tagCounts,
                           isPresented: $showTagFilter,
@@ -426,6 +495,16 @@ struct MainView: View {
             }
 
             Button {
+                AppDelegate.instance?.showCalendar()
+            } label: {
+                Image(systemName: "calendar")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Calendar view")
+
+            Button {
                 showSettings = true
             } label: {
                 Image(systemName: "gearshape")
@@ -435,17 +514,14 @@ struct MainView: View {
             .buttonStyle(.plain)
             .help("Settings")
         }
-        // One continuous glass panel with the editor above: the surface spans
-        // the full padded row (abutting the editor's glass) and full content
-        // width, so when the composer expands the search row glides down with
-        // it and reads as the same surface — blurring the list items it passes
-        // over — rather than a transparent row showing raw items through gaps.
-        // Horizontal padding sits INSIDE the background so the band spans the
-        // full content width, matching the editor's glass above.
+        // The macOS 26 popover already supplies the full-window glass surface;
+        // adding another glass lens beneath these compact controls makes them
+        // read as a flat layer. Older systems use the fallback toolbar band.
+        // The controls' own glass effects remain grouped with the popover.
         .padding(.top, 8)
         .padding(.bottom, 10)
         .padding(.horizontal, 12)
-        .background(AppPalette.surfaceFill)
+        .liquidGlassToolbarSurface()
         .zIndex((showTagFilter || showRecovery) ? 10 : 0)
     }
 
@@ -463,7 +539,7 @@ struct MainView: View {
             .foregroundStyle(.tertiary)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 4)
-            .background(.ultraThinMaterial)
+            .liquidGlassBand()
         }
     }
 
@@ -492,7 +568,7 @@ struct MainView: View {
             ScrollView {
                 ScrollViewReader { proxy in
                     LazyVStack(spacing: 0) {
-                        if filteredItems.isEmpty {
+                        if filteredItems.isEmpty && searchCompletedItems.isEmpty {
                             VStack(spacing: 6) {
                                 Image(systemName: "checkmark.circle")
                                     .font(.system(size: 28))
@@ -507,7 +583,8 @@ struct MainView: View {
                             ForEach(filteredItems, id: \.calendarItemIdentifier) { reminder in
                                 ReminderRowView(reminder: reminder,
                                                 isSelected: selection == .reminder(reminder.calendarItemIdentifier),
-                                                onSelect: { selection = .reminder(reminder.calendarItemIdentifier) },
+                                                onSelect: { selectRow(.reminder(reminder.calendarItemIdentifier)) },
+                                                onOpen: { viewingReminder = reminder },
                                                 onToggleCompletion: performToggleCompletion,
                                                 onDelete: performDelete,
                                                 onEdit: { editingReminder = $0 },
@@ -515,7 +592,33 @@ struct MainView: View {
                                                 onDuplicate: duplicateReminder,
                                                 onMoveToList: moveReminder,
                                                 onCopyTitle: copyReminderTitle)
+                                .transition(removalTransition)
                                 .id(rowID(.reminder(reminder.calendarItemIdentifier)))
+                                Divider()
+                                    .padding(.leading, 12)
+                            }
+                            if !searchCompletedItems.isEmpty {
+                                Text("Completed")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 12)
+                                    .padding(.top, 12)
+                                    .padding(.bottom, 4)
+                                ForEach(searchCompletedItems, id: \.calendarItemIdentifier) { reminder in
+                                    ReminderRowView(reminder: reminder,
+                                                    isSelected: selection == .reminder(reminder.calendarItemIdentifier),
+                                                    onSelect: { selectRow(.reminder(reminder.calendarItemIdentifier)) },
+                                                    onOpen: { viewingReminder = reminder },
+                                                    onToggleCompletion: performToggleCompletion,
+                                                    onDelete: performDelete,
+                                                    onEdit: { editingReminder = $0 },
+                                                    onSnooze: beginSnooze,
+                                                    onDuplicate: duplicateReminder,
+                                                    onMoveToList: moveReminder,
+                                                    onCopyTitle: copyReminderTitle)
+                                    .transition(removalTransition)
+                                    .id(rowID(.reminder(reminder.calendarItemIdentifier)))
+                                }
                                 Divider()
                                     .padding(.leading, 12)
                             }
@@ -530,7 +633,8 @@ struct MainView: View {
                                 ForEach(items, id: \.calendarItemIdentifier) { reminder in
                                     ReminderRowView(reminder: reminder,
                                                     isSelected: selection == .reminder(reminder.calendarItemIdentifier),
-                                                    onSelect: { selection = .reminder(reminder.calendarItemIdentifier) },
+                                                    onSelect: { selectRow(.reminder(reminder.calendarItemIdentifier)) },
+                                                    onOpen: { viewingReminder = reminder },
                                                     onToggleCompletion: performToggleCompletion,
                                                     onDelete: performDelete,
                                                     onEdit: { editingReminder = $0 },
@@ -538,6 +642,7 @@ struct MainView: View {
                                                     onDuplicate: duplicateReminder,
                                                     onMoveToList: moveReminder,
                                                     onCopyTitle: copyReminderTitle)
+                                    .transition(removalTransition)
                                     .id(rowID(.reminder(reminder.calendarItemIdentifier)))
                                 }
                                 Divider()
@@ -546,21 +651,35 @@ struct MainView: View {
                         }
                     }
                     .onAppear { scrollProxy = proxy }
+                    // Completion removes the row from this list; animate that
+                    // removal (fade + shrink via `removalTransition`) whenever
+                    // the completed set changes. Keying on the completed count
+                    // keeps search typing and other list mutations instant.
+                    .animation(.easeInOut(duration: 0.18),
+                               value: store.completedReminders.count)
                 }
             }
             .scrollIndicators(.hidden)
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 syncFooter
             }
+            // Clicking empty list space (below the rows, on a section header,
+            // between items) clears the selection; rows and their buttons
+            // consume their own taps.
+            .onTapGesture { selection = nil }
             if let toast = actionToast {
                 ActionToast(message: toast.message,
                             actionTitle: toast.actionTitle,
-                            action: toast.action)
-                    .padding(.bottom, 10)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                            action: toast.action,
+                            contentOffset: toastContentOffset,
+                            contentOpacity: toastContentOpacity)
+                    // Pure state-driven motion (no transitions): always a
+                    // clean vertical rise and fade, straight up from below.
+                    .offset(y: toastPresented ? 0 : 36)
+                    .opacity(toastPresented ? 1 : 0)
+                    .padding(.bottom, 12)
             }
         }
-        .animation(.spring(duration: 0.3), value: actionToast?.message)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .popover(isPresented: Binding(get: { snoozingReminder != nil },
                                       set: { presented in
@@ -582,7 +701,11 @@ struct MainView: View {
     }
 
 
-    private func performToggleCompletion(_ reminder: EKReminder) {
+    /// `tickSettled` fires once the save has settled (success or failure) so
+    /// the row can clear its tick state; on success the row's checked circle
+    /// persists because the reminder is completed in the data.
+    private func performToggleCompletion(_ reminder: EKReminder,
+                                         _ tickSettled: @escaping () -> Void = {}) {
         Task { @MainActor in
             do {
                 let result = try await store.toggleCompletion(reminder)
@@ -597,6 +720,7 @@ struct MainView: View {
             } catch {
                 showActionToast(message: error.localizedDescription, duration: 2.5)
             }
+            tickSettled()
         }
     }
 
@@ -664,16 +788,52 @@ struct MainView: View {
                                  action: (() -> Void)? = nil,
                                  duration: TimeInterval) {
         actionToastTask?.cancel()
-        actionToast = ActionToastState(message: message,
-                                       actionTitle: actionTitle,
-                                       action: action,
-                                       duration: duration)
-        let expiresUndo = actionTitle != nil
+        let state = ActionToastState(message: message,
+                                     actionTitle: actionTitle,
+                                     action: action,
+                                     duration: duration)
+        let wasShowing = actionToast != nil
         actionToastTask = Task { @MainActor in
+            if wasShowing && toastPresented {
+                // Replacement with the pill up (Undo → Undid, Undid →
+                // Completed again): roll the current content up and out,
+                // swap, then roll the new content up and in from below.
+                withAnimation(.easeOut(duration: 0.12)) {
+                    toastContentOffset = -10
+                    toastContentOpacity = 0
+                }
+                try? await Task.sleep(nanoseconds: 130_000_000)
+                guard !Task.isCancelled else { return }
+                actionToast = state
+                toastContentOffset = 10
+                toastContentOpacity = 0
+                // Let the hidden content render first, then animate it in —
+                // otherwise the state flips coalesce and nothing animates.
+                try? await Task.sleep(nanoseconds: 16_000_000)
+                withAnimation(.easeOut(duration: 0.18)) {
+                    toastContentOffset = 0
+                    toastContentOpacity = 1
+                }
+            } else {
+                // Fresh toast, or a replacement during the initial rise:
+                // put the (new) content up with the rise animation.
+                actionToast = state
+                toastPresented = false
+                try? await Task.sleep(nanoseconds: 30_000_000)
+                guard !Task.isCancelled else { return }
+                withAnimation(.easeOut(duration: 0.3)) {
+                    toastPresented = true
+                }
+            }
             try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
             guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.22)) {
+                toastPresented = false
+            }
+            try? await Task.sleep(nanoseconds: 220_000_000)
+            guard !Task.isCancelled else { return }
             actionToast = nil
-            if expiresUndo { undoEntry = nil }
+            if actionTitle != nil { undoEntry = nil }
         }
     }
 
@@ -687,16 +847,26 @@ struct MainView: View {
                     showActionToast(message: "Reminder no longer exists", duration: 2.5)
                     return
                 }
+                var redoEntry: UndoEntry?
                 if reminder.isCompleted != wasCompleted {
                     do {
-                        _ = try await store.toggleCompletion(reminder)
+                        let result = try await store.toggleCompletion(reminder)
+                        // The reminder is back in `wasCompleted`; remember the
+                        // inverse so the toast's Undo button (and ⌘Z) re-applies
+                        // the original action — a full redo loop.
+                        redoEntry = .completion(reminderID: reminderID,
+                                                wasCompleted: !result.isCompleted)
                     } catch {
                         showActionToast(message: error.localizedDescription, duration: 2.5)
                         return
                     }
                 }
+                undoEntry = redoEntry
                 let title = reminder.title ?? "Reminder"
-                showActionToast(message: "Undid \"\(title)\"", duration: 2.5)
+                showActionToast(message: "Undid \"\(title)\"",
+                                actionTitle: redoEntry == nil ? nil : "Undo",
+                                action: redoEntry == nil ? nil : { performUndo() },
+                                duration: redoEntry == nil ? 2.5 : 5.0)
             case .deletion(let snapshot):
                 do {
                     try await store.restore(snapshot)
@@ -771,6 +941,16 @@ struct MainView: View {
         }
     }
 
+    /// How a row leaves the list: completing fades it out with a slight lift
+    /// and shrink instead of popping, while inserts (restores, sync) appear
+    /// instantly.
+    private var removalTransition: AnyTransition {
+        .asymmetric(insertion: .identity,
+                    removal: .opacity
+                        .combined(with: .scale(scale: 0.97))
+                        .combined(with: .offset(y: -4)))
+    }
+
     /// Reconstruct modifier membership from the event's flags (post-change
     /// state), so modifier chords like ⌘F match even if flagsChanged never
     /// reaches a local monitor. Idempotent with the flagsChanged branch (Set).
@@ -792,7 +972,9 @@ struct MainView: View {
             guard let idx = ListNavigation.move(fromIndex: ListNavigation.selectedIndex(selection, in: rows),
                                                 by: delta, count: rows.count), idx < rows.count else { return }
             selection = rows[idx]
-            withAnimation { scrollProxy?.scrollTo(rowID(rows[idx]), anchor: .center) }
+            // Minimal scroll: bring the row into view only if it's off-screen,
+            // instead of re-centering the whole list on every arrow press.
+            withAnimation { scrollProxy?.scrollTo(rowID(rows[idx])) }
         case .scrollPage(let delta):
             let rows = navRows
             guard let first = rows.first, let last = rows.last else { return }
@@ -877,6 +1059,14 @@ struct MainView: View {
 
     private func closePopover() {
         AppDelegate.instance?.closePopover()
+    }
+
+    /// Select a row and hand keyboard focus to the list: resigning the first
+    /// responder lets arrow keys move the selection immediately after a mouse
+    /// click, instead of still typing into search.
+    private func selectRow(_ row: NavigableRow) {
+        selection = row
+        popoverWindow?.makeFirstResponder(nil)
     }
 
     /// Escape chain for the text fields: clear the selection first, else close.

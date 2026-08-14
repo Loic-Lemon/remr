@@ -6,6 +6,7 @@ enum SnoozeChoice: Equatable {
     case tomorrowMorning
     case tomorrowEvening
     case nextMonday
+    case thisWeekend
 }
 
 enum SnoozeCalculator {
@@ -36,6 +37,11 @@ enum SnoozeCalculator {
                 return nil
             }
             return (date, true)
+
+        case .thisWeekend:
+            return weekendMorning(after: now, calendar: calendar)
+                .flatMap { dateAt(hour: 9, on: $0, calendar: calendar) }
+                .map { ($0, true) }
         }
     }
 
@@ -56,5 +62,18 @@ enum SnoozeCalculator {
             daysUntilMonday = 7
         }
         return calendar.date(byAdding: .day, value: daysUntilMonday, to: today)
+    }
+
+    /// Saturday at 9 AM; if today is Saturday, tomorrow (Sunday); if today
+    /// is Sunday, next Saturday.
+    private static func weekendMorning(after now: Date, calendar: Calendar) -> Date? {
+        let today = calendar.startOfDay(for: now)
+        let weekday = calendar.component(.weekday, from: today)
+        let saturday = 7 // Gregorian: Sunday = 1 ... Saturday = 7.
+        var daysUntilSaturday = (saturday - weekday + 7) % 7
+        if daysUntilSaturday == 0 {
+            daysUntilSaturday = 1
+        }
+        return calendar.date(byAdding: .day, value: daysUntilSaturday, to: today)
     }
 }

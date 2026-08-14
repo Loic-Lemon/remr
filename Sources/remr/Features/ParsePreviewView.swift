@@ -81,7 +81,7 @@ struct ParsePreviewView: View {
         Text(text)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
-            .background(Capsule().fill(Color.secondary.opacity(0.14)))
+            .liquidGlassChip()
     }
 
     private func tagChip(_ tag: String) -> some View {
@@ -90,6 +90,6 @@ struct ParsePreviewView: View {
             .foregroundStyle(.white)
             .padding(.horizontal, 5)
             .padding(.vertical, 2)
-            .background(Capsule().fill(tagStore.color(for: tag)))
+            .liquidGlassChip(tint: tagStore.color(for: tag), filled: true)
     }
 }

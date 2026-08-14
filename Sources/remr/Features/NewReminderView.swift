@@ -361,7 +361,18 @@ struct NewReminderView: View {
     /// exactly the token that produced it.
     private var suggestionMatches: [SuggestionCandidate] {
         guard let context = completionContext else { return [] }
-        let token = context.text
+        return Self.suggestionCandidates(
+            for: context.text,
+            listTitles: store.reminderCalendars().map(\.title),
+            tags: store.allTags()
+        )
+    }
+
+    /// Keyword/`@`/`#` candidates matching the caret token. Every kind
+    /// excludes the exact match, so accepting a suggestion (which leaves the
+    /// completed token in the field) closes the dropdown instead of re-
+    /// proposing the very item just inserted.
+    static func suggestionCandidates(for token: String, listTitles: [String], tags: [String]) -> [SuggestionCandidate] {
         guard !token.isEmpty else { return [] }
         let lower = token.lowercased()
         var candidates: [SuggestionCandidate] = []
@@ -370,19 +381,18 @@ struct NewReminderView: View {
             let query = String(token.dropFirst()).trimmingCharacters(in: .whitespaces).lowercased()
             guard !query.isEmpty else { return [] }
             var seen = Set<String>()
-            for calendar in store.reminderCalendars() {
-                let title = calendar.title
+            for title in listTitles {
                 let key = title.lowercased()
-                guard key.hasPrefix(query), seen.insert(key).inserted else { continue }
+                guard key != query, key.hasPrefix(query), seen.insert(key).inserted else { continue }
                 candidates.append(SuggestionCandidate(id: "list:\(key)", label: "@\(title)", replacement: "@\(title)", kind: .list))
             }
         } else if token.hasPrefix("#") {
             let query = String(token.dropFirst()).lowercased()
             guard !query.isEmpty else { return [] }
             var seen = Set<String>()
-            for tag in store.allTags() {
+            for tag in tags {
                 let key = tag.lowercased()
-                guard key.hasPrefix(query), seen.insert(key).inserted else { continue }
+                guard key != query, key.hasPrefix(query), seen.insert(key).inserted else { continue }
                 candidates.append(SuggestionCandidate(id: "tag:\(key)", label: "#\(tag)", replacement: "#\(tag)", kind: .tag))
             }
         } else {
@@ -478,11 +488,7 @@ struct NewReminderView: View {
         }
         .padding(.horizontal, 12)
         .padding(.bottom, 6)
-        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(AppPalette.controlStroke.opacity(0.7), lineWidth: 1)
-        }
+        .liquidGlassField(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     private func suggestionIcon(for kind: SuggestionKind) -> String {

@@ -1,10 +1,11 @@
 import AppKit
 import Carbon.HIToolbox
 import Combine
+import EventKit
 import SwiftUI
 
 @MainActor
-private final class QuickAddPanel: NSPanel {
+private final class FloatingKeyPanel: NSPanel {
     // Borderless windows do not become key by default. The text editor in the
     // quick-add surface needs the panel to accept keyboard input (including
     // Escape), while it must never become the application's main window.
@@ -30,19 +31,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var serviceHosting: NSHostingController<AnyView>?
     private var quickAddWindow: NSPanel?
     private var quickAddHosting: NSHostingController<AnyView>?
+    private var calendarWindow: NSPanel?
+    private var calendarHosting: NSHostingController<AnyView>?
     private var mouseDownGlobalMonitor: Any?
     private var mouseDownLocalMonitor: Any?
     private var quickAddCloseGeneration = 0
+    private var calendarCloseGeneration = 0
     private var toggleHotKeyRef: EventHotKeyRef?
     private var quickAddHotKeyRef: EventHotKeyRef?
+    private var calendarHotKeyRef: EventHotKeyRef?
     private let hotKeySignature: OSType = 0x72656D72 // "remr"
     private var currentToggleHotkeyCombo: KeyCombo?
     private var currentQuickAddHotkeyCombo: KeyCombo?
+    private var currentCalendarHotkeyCombo: KeyCombo?
     private var hotKeyErrors: [BindableAction: String] = [:]
     private var settingsCancellables: Set<AnyCancellable> = []
     func applicationWillTerminate(_ notification: Notification) {
         if let toggleHotKeyRef { UnregisterEventHotKey(toggleHotKeyRef) }
         if let quickAddHotKeyRef { UnregisterEventHotKey(quickAddHotKeyRef) }
+        if let calendarHotKeyRef { UnregisterEventHotKey(calendarHotKeyRef) }
         if let mouseDownGlobalMonitor {
             NSEvent.removeMonitor(mouseDownGlobalMonitor)
             self.mouseDownGlobalMonitor = nil
@@ -72,6 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 switch hotKeyID.id {
                 case 1: app.togglePopover()
                 case 2: app.showQuickAdd()
+                case 3: app.showCalendar()
                 default: break
                 }
             }
@@ -83,6 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func reapplyHotKeys(bindings: [BindableAction: KeyCombo]? = nil) {
         reapplyHotKey(.togglePopover, bindings: bindings)
         reapplyHotKey(.quickAdd, bindings: bindings)
+        reapplyHotKey(.openCalendar, bindings: bindings)
     }
 
     /// Re-register one global binding without disturbing the other action's
@@ -104,6 +113,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .quickAdd:
             current = currentQuickAddHotkeyCombo
             ref = quickAddHotKeyRef
+        case .openCalendar:
+            current = currentCalendarHotkeyCombo
+            ref = calendarHotKeyRef
         default:
             return
         }
@@ -118,6 +130,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let ref { UnregisterEventHotKey(ref) }
             quickAddHotKeyRef = nil
             currentQuickAddHotkeyCombo = nil
+        case .openCalendar:
+            if let ref { UnregisterEventHotKey(ref) }
+            calendarHotKeyRef = nil
+            currentCalendarHotkeyCombo = nil
         default:
             return
         }
@@ -153,6 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch action {
         case .togglePopover: return 1
         case .quickAdd: return 2
+        case .openCalendar: return 3
         default: return 0
         }
     }
@@ -165,6 +182,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .quickAdd:
             currentQuickAddHotkeyCombo = combo
             quickAddHotKeyRef = ref
+        case .openCalendar:
+            currentCalendarHotkeyCombo = combo
+            calendarHotKeyRef = ref
         default: break
         }
     }
@@ -211,7 +231,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             StatusIcon.apply(to: button,
                              symbol: settings.menuBarIconSymbol,
                              style: settings.menuBarIconStyle,
-                             color: settings.menuBarIconColor)
+                             color: settings.menuBarIconColor,
+                             badge: settings.menuBarIconBadge,
+                             count: 0)
             button.action = #selector(statusItemClicked(_:))
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
             button.toolTip = "remr"
@@ -228,7 +250,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // short window fade below so outside-click dismissal stays unchanged.
         popover.animates = true
         let hosting = NSHostingController(
-            rootView: ContentView().environmentObject(store).environmentObject(SettingsStore.shared)
+            rootView: ContentView()
+                .environmentObject(store)
+                .environmentObject(SettingsStore.shared)
+                .remrAppearance(using: SettingsStore.shared)
         )
         // Warm the first SwiftUI layout now, while the app is still settling
         // in behind the status item: the first popover show then appears
@@ -246,6 +271,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self else { return }
                 if self.popover?.isShown == true { self.closePopover() }
                 if self.quickAddWindow?.isVisible == true { self.closeQuickAdd() }
+                if self.calendarWindow?.isVisible == true { self.closeCalendar() }
             }
         }
 
@@ -258,10 +284,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // above covers windows owned by other applications.
             let clickedWindowNumber = event.window?.windowNumber
             Task { @MainActor in
-                guard let self, let quickAddWindow = self.quickAddWindow,
-                      quickAddWindow.isVisible,
-                      clickedWindowNumber != quickAddWindow.windowNumber else { return }
-                self.closeQuickAdd()
+                guard let self else { return }
+                if let w = self.quickAddWindow, w.isVisible, clickedWindowNumber != w.windowNumber { self.closeQuickAdd() }
+                if let w = self.calendarWindow, w.isVisible, clickedWindowNumber != w.windowNumber { self.closeCalendar() }
             }
             return event
         }
@@ -277,17 +302,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] appearance in self?.applyAppearance(appearance) }
             .store(in: &settingsCancellables)
 
-        // Any of the three icon settings re-renders the status item. The
+        // Any of the icon settings re-renders the status item. The
         // emitted values are used rather than re-reading the store: @Published
         // sends in willSet, so reading the property inside a sink observes the
-        // previous value and every change would lag by one.
+        // previous value and every change would lag by one. The store's first
+        // refresh() publishes the counts shortly after launch, so the first
+        // combined emission applies the badge; the manual initial apply above
+        // is idempotent.
         SettingsStore.shared.$menuBarIconSymbol
             .combineLatest(SettingsStore.shared.$menuBarIconStyle,
-                           SettingsStore.shared.$menuBarIconColor)
-            .dropFirst()
-            .sink { [weak self] symbol, style, color in
+                           SettingsStore.shared.$menuBarIconColor,
+                           SettingsStore.shared.$menuBarIconBadge)
+            .combineLatest(store.$overdueCount)
+            .combineLatest(store.$dueTodayCount)
+            .sink { [weak self] args, dueToday in
                 guard let button = self?.statusItem?.button else { return }
-                StatusIcon.apply(to: button, symbol: symbol, style: style, color: color)
+                let (settings, overdue) = args
+                let (symbol, style, color, badge) = settings
+                StatusIcon.apply(to: button, symbol: symbol, style: style, color: color,
+                                 badge: badge,
+                                 count: badge == .overdue ? overdue : dueToday)
             }
             .store(in: &settingsCancellables)
     }
@@ -302,6 +336,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         serviceWindow?.appearance = nsAppearance
         quickAddWindow?.appearance = nsAppearance
+        calendarWindow?.appearance = nsAppearance
     }
 
 
@@ -337,41 +372,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if popover.isShown {
             closePopover()
         } else {
-            store.refresh()
-            // Open instantly, then fade in. The native popover spring
-            // (~0.25s) re-renders the Liquid Glass surface on every frame —
-            // that per-frame glass work is what reads as "sluggish" on open.
-            // Showing at full size and animating only the window alpha is a
-            // single cheap layer composite, and it doubles as cover for the
-            // initial list fill that lands right after show().
-            popover.animates = false
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            // macOS 26's NSPopover supplies the native Liquid Glass surface.
-            // Older systems need the transparent host for the material fallback.
-            if #unavailable(macOS 26.0) {
-                if let window = popover.contentViewController?.view.window {
-                    window.isOpaque = false
-                    window.backgroundColor = .clear
-                }
-            }
-            applyAppearance(SettingsStore.shared.appearance)
+            showPopover(relativeTo: button)
+        }
+    }
+
+    private func showPopover(relativeTo button: NSStatusBarButton) {
+        store.refresh()
+        // Open instantly, then fade in. The native popover spring
+        // (~0.25s) re-renders the Liquid Glass surface on every frame —
+        // that per-frame glass work is what reads as "sluggish" on open.
+        // Showing at full size and animating only the window alpha is a
+        // single cheap layer composite, and it doubles as cover for the
+        // initial list fill that lands right after show().
+        popover.animates = false
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        // macOS 26's NSPopover supplies the native Liquid Glass surface.
+        // Older systems need the transparent host for the material fallback.
+        if #unavailable(macOS 26.0) {
             if let window = popover.contentViewController?.view.window {
-                // Set the start alpha before the runloop paints so the first
-                // composited frame is already transparent — no flash.
-                window.alphaValue = 0
-                NSAnimationContext.runAnimationGroup { context in
-                    context.duration = 0.1
-                    context.allowsImplicitAnimation = true
-                    window.animator().alphaValue = 1
-                }
+                window.isOpaque = false
+                window.backgroundColor = .clear
             }
-            // Hardening: an .accessory app shown from the status item is not
-            // activated by the status-item click alone, and local NSEvent
-            // monitors only see hardware key events delivered to an active app.
-            // Activating here guarantees the popover (and its inline Settings
-            // view) receives keyboard input. Click-into-popover already
-            // activates; this makes the popover keyboard-usable immediately.
-            NSApp.activate(ignoringOtherApps: true)
+        }
+        applyAppearance(SettingsStore.shared.appearance)
+        if let window = popover.contentViewController?.view.window {
+            // Set the start alpha before the runloop paints so the first
+            // composited frame is already transparent — no flash.
+            window.alphaValue = 0
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.1
+                context.allowsImplicitAnimation = true
+                window.animator().alphaValue = 1
+            }
+        }
+        // Hardening: an .accessory app shown from the status item is not
+        // activated by the status-item click alone, and local NSEvent
+        // monitors only see hardware key events delivered to an active app.
+        // Activating here guarantees the popover (and its inline Settings
+        // view) receives keyboard input. Click-into-popover already
+        // activates; this makes the popover keyboard-usable immediately.
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Closes the calendar and opens the main popover on a reminder's detail
+    /// page (the calendar double-click handoff).
+    func showReminderDetail(_ reminder: EKReminder) {
+        closeCalendar()
+        NotificationCenter.default.post(name: .remrShowReminderDetail,
+                                        object: nil,
+                                        userInfo: ["id": reminder.calendarItemIdentifier])
+        if !popover.isShown, let button = statusItem.button {
+            showPopover(relativeTo: button)
         }
     }
 
@@ -416,6 +467,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                          onCreated: { [weak self] in self?.closeQuickAdd() })
                 .environmentObject(store)
                 .environmentObject(SettingsStore.shared)
+                .remrAppearance(using: SettingsStore.shared)
         )
 
         let window: NSPanel
@@ -424,7 +476,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window = existingWindow
         } else {
             let hosting = NSHostingController(rootView: rootView)
-            let newWindow = QuickAddPanel(contentViewController: hosting)
+            let newWindow = FloatingKeyPanel(contentViewController: hosting)
             newWindow.styleMask = [.borderless]
             newWindow.isOpaque = false
             newWindow.backgroundColor = .clear
@@ -496,6 +548,102 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Opens the calendar view in a reusable centered floating panel.
+    func showCalendar() {
+        if popover.isShown { closePopover() }
+
+        // Invalidate any pending close fade from a previous presentation.
+        calendarCloseGeneration &+= 1
+
+        let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+
+        let rootView = AnyView(
+            CalendarView(onCancel: { [weak self] in self?.closeCalendar() },
+                         onOpenDetail: { [weak self] reminder in self?.showReminderDetail(reminder) })
+                .environmentObject(store)
+                .environmentObject(SettingsStore.shared)
+                .remrAppearance(using: SettingsStore.shared)
+        )
+
+        let window: NSPanel
+        if let existingWindow = calendarWindow, let hosting = calendarHosting {
+            hosting.rootView = rootView
+            window = existingWindow
+        } else {
+            let hosting = NSHostingController(rootView: rootView)
+            let newWindow = FloatingKeyPanel(contentViewController: hosting)
+            newWindow.styleMask = [.borderless]
+            newWindow.isOpaque = false
+            newWindow.backgroundColor = .clear
+            // No window shadow: the panel is a transparent window whose only
+            // opaque content is the glass card, so AppKit re-derives the
+            // shadow from the card's shape every frame — that
+            // re-computation reads as the liquid-glass "shimmy" at the top.
+            newWindow.hasShadow = false
+            newWindow.isReleasedWhenClosed = false
+            newWindow.isFloatingPanel = true
+            newWindow.level = .floating
+            newWindow.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            newWindow.hidesOnDeactivate = false
+            newWindow.becomesKeyOnlyIfNeeded = false
+            calendarHosting = hosting
+            calendarWindow = newWindow
+            window = newWindow
+        }
+
+        // Fixed-size glass surface, clamped to the visible frame so the panel
+        // never overflows smaller screens. Sizing applies to reused windows
+        // too, so a reopen always presents the same panel.
+        let width = min(880, (screen?.visibleFrame.width ?? 1200) - 24)
+        let height = min(640, (screen?.visibleFrame.height ?? 800) - 24)
+        window.setContentSize(NSSize(width: width, height: height))
+
+        // Restore the reusable panel before ordering it front. This keeps a
+        // rapid reopen fully visible and invalidates any pending fade.
+        window.alphaValue = 1
+
+        if let screen {
+            let visibleFrame = screen.visibleFrame
+            let frame = window.frame
+            window.setFrameOrigin(NSPoint(x: visibleFrame.midX - frame.width / 2,
+                                          y: visibleFrame.midY - frame.height / 2))
+        } else {
+            window.center()
+        }
+        applyAppearance(SettingsStore.shared.appearance)
+        // Activate BEFORE ordering front: the app is inactive when shown from
+        // the status item, and an inactive app's window can never become key.
+        // Ordering front after activation makes the panel key, so keyboard
+        // input (Esc, mode switching) works immediately.
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    private func closeCalendar() {
+        guard let window = calendarWindow else { return }
+        guard window.isVisible else {
+            window.alphaValue = 1
+            return
+        }
+
+        calendarCloseGeneration &+= 1
+        let generation = calendarCloseGeneration
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.12
+            context.allowsImplicitAnimation = true
+            window.animator().alphaValue = 0
+        } completionHandler: { [weak self, weak window] in
+            MainActor.assumeIsolated {
+                guard let self, let window,
+                      self.calendarCloseGeneration == generation else { return }
+                window.close()
+                window.alphaValue = 1
+            }
+        }
+    }
+
 
     @objc private func refreshData() {
         store.refresh()
@@ -505,6 +653,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidResignActive(_ notification: Notification) {
         if popover.isShown { closePopover() }
         if quickAddWindow?.isVisible == true { closeQuickAdd() }
+        if calendarWindow?.isVisible == true { closeCalendar() }
     }
 
     // MARK: - Service window
@@ -517,6 +666,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 onDone: { self.serviceWindow?.close() })
                 .environmentObject(store)
                 .environmentObject(SettingsStore.shared)
+                .remrAppearance(using: SettingsStore.shared)
         )
         if let hosting = serviceHosting {
             hosting.rootView = rootView

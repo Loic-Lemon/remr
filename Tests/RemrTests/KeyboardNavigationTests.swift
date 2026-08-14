@@ -181,11 +181,11 @@ final class KeyboardNavigationTests: XCTestCase {
         XCTAssertTrue(empty.isEmpty)
     }
 
-    /// (d) Search mode returns only the filtered rows — no section rows, no
-    /// recovery headers.
-    func testRowsSearchModeReturnsOnlyFiltered() {
+    /// Search mode: active matches first, then every completed match (no cap,
+    /// no tab headers, no deleted rows).
+    func testRowsSearchModeAppendsCompletedMatches() {
         let overdue = [makeReminder("o1")]
-        let completed = [makeReminder("c1")]
+        let completed = [makeReminder("c1"), makeReminder("c2")]
         let deleted = [makeDeleted("d1")]
         let filtered = [makeReminder("f1"), makeReminder("f2")]
 
@@ -199,11 +199,52 @@ final class KeyboardNavigationTests: XCTestCase {
             showDeleted: true
         )
 
-        XCTAssertEqual(rows, filtered.map { .reminder($0.calendarItemIdentifier) })
+        let expected: [NavigableRow] = filtered.map { .reminder($0.calendarItemIdentifier) }
+            + completed.map { .reminder($0.calendarItemIdentifier) }
+        XCTAssertEqual(rows, expected)
         XCTAssertFalse(rows.contains { row in
             if case .tabHeader = row { return true }
             return false
         })
+        XCTAssertFalse(rows.contains { row in
+            if case .deleted = row { return true }
+            return false
+        })
+    }
+
+    /// Search mode without `showCompleted` returns only the active matches.
+    func testRowsSearchModeHidesCompletedWhenNotShown() {
+        let completed = [makeReminder("c1")]
+        let filtered = [makeReminder("f1")]
+
+        let rows = ListNavigation.rows(
+            sections: [],
+            filtered: filtered,
+            isSearching: true,
+            completed: completed,
+            showCompleted: false,
+            deleted: [],
+            showDeleted: false
+        )
+
+        XCTAssertEqual(rows, [.reminder(filtered[0].calendarItemIdentifier)])
+    }
+
+    /// Search results are not capped at five the way the recovery tabs are.
+    func testRowsSearchModeDoesNotCapCompleted() {
+        let completed = (1...7).map { makeReminder("c\($0)") }
+
+        let rows = ListNavigation.rows(
+            sections: [],
+            filtered: [],
+            isSearching: true,
+            completed: completed,
+            showCompleted: true,
+            deleted: [],
+            showDeleted: false
+        )
+
+        XCTAssertEqual(rows.count, 7)
     }
 
     /// (e) Completed and deleted rows are capped at 5 each.
@@ -289,6 +330,32 @@ final class KeyboardNavigationTests: XCTestCase {
         XCTAssertEqual(ListNavigation.selectedIndex(.tabHeader(.completed), in: rows), 1)
         XCTAssertEqual(ListNavigation.selectedIndex(.deleted(deletedID), in: rows), 2)
         XCTAssertEqual(ListNavigation.selectedIndex(.tabHeader(.deleted), in: rows), 3)
+    }
+
+    // MARK: - ListNavigation.replacement
+
+    /// A selection still present in the rows is returned unchanged.
+    func testReplacementKeepsPresentSelection() {
+        let rows: [NavigableRow] = [.reminder("a"), .reminder("b")]
+        XCTAssertEqual(ListNavigation.replacement(for: .reminder("b"), in: rows, previous: rows), .reminder("b"))
+    }
+
+    /// A vanished selection hands off to the row now at its old index.
+    func testReplacementFollowsVacatedIndex() {
+        let previous: [NavigableRow] = [.reminder("a"), .reminder("b"), .reminder("c")]
+        let rows: [NavigableRow] = [.reminder("a"), .reminder("c")]  // "b" deleted
+        XCTAssertEqual(ListNavigation.replacement(for: .reminder("b"), in: rows, previous: previous), .reminder("c"))
+        // Deleting the last row lands on the new last row.
+        let rows2: [NavigableRow] = [.reminder("a"), .reminder("b")]
+        XCTAssertEqual(ListNavigation.replacement(for: .reminder("c"), in: rows2, previous: previous), .reminder("b"))
+    }
+
+    /// No rows left, or a selection that was never in `previous`, yields nil.
+    func testReplacementClearsWhenListEmptiesOrSelectionUnknown() {
+        XCTAssertNil(ListNavigation.replacement(for: .reminder("b"), in: [], previous: [.reminder("b")]))
+        XCTAssertNil(ListNavigation.replacement(for: .reminder("x"),
+                                                in: [.reminder("a")],
+                                                previous: [.reminder("a"), .reminder("b")]))
     }
 
     // MARK: - KeyboardRouter.action: Escape chain

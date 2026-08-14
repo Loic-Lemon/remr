@@ -9,7 +9,7 @@ struct RecoveryPopoverView: View {
     @EnvironmentObject private var store: ReminderStore
     let onClose: () -> Void
 
-    let onToggleCompletion: (EKReminder) -> Void
+    let onToggleCompletion: (EKReminder, @escaping () -> Void) -> Void
     let onDelete: (EKReminder) -> Void
     let onEdit: (EKReminder) -> Void
     let onDuplicate: (EKReminder) -> Void
@@ -19,6 +19,7 @@ struct RecoveryPopoverView: View {
     let onDeletedForever: (DeletedReminder) -> Void
 
     @State private var selectedTab: RecoveryTab = .completed
+    @State private var selectedCompletedID: String?
     var body: some View {
         VStack(spacing: 0) {
             RemrPopoverHeader(
@@ -39,7 +40,7 @@ struct RecoveryPopoverView: View {
             .labelsHidden()
             .pickerStyle(.segmented)
             .padding(4)
-            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .liquidGlassField(in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
 
@@ -56,6 +57,7 @@ struct RecoveryPopoverView: View {
             .scrollIndicators(.hidden)
         }
         .frame(width: 340, height: 430)
+        .liquidGlassGrouping()
     }
 
     @ViewBuilder
@@ -67,7 +69,9 @@ struct RecoveryPopoverView: View {
                 ForEach(store.completedReminders.prefix(5), id: \.calendarItemIdentifier) { reminder in
                     ReminderRowView(
                         reminder: reminder,
-                        onSelect: { store.openInReminders(reminder) },
+                        isSelected: selectedCompletedID == reminder.calendarItemIdentifier,
+                        onSelect: { selectedCompletedID = reminder.calendarItemIdentifier },
+                        onOpen: { store.openInReminders(reminder) },
                         onToggleCompletion: onToggleCompletion,
                         onDelete: onDelete,
                         onEdit: onEdit,
@@ -76,6 +80,10 @@ struct RecoveryPopoverView: View {
                         onMoveToList: onMoveToList,
                         onCopyTitle: onCopyTitle
                     )
+                    .transition(.asymmetric(insertion: .identity,
+                                            removal: .opacity
+                                                .combined(with: .scale(scale: 0.97))
+                                                .combined(with: .offset(y: -4))))
                     Divider()
                         .padding(.leading, 12)
                 }
@@ -83,6 +91,7 @@ struct RecoveryPopoverView: View {
                     moreItemsHint(count: store.completedReminders.count - 5)
                 }
             }
+            .animation(.easeInOut(duration: 0.18), value: store.completedReminders.count)
         }
     }
 

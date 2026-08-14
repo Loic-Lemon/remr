@@ -21,18 +21,19 @@ struct TagFilterMenu: View {
         Button {
             isPresented.toggle()
         } label: {
-            HStack(spacing: 5) {
+            HStack(spacing: 6) {
                 Image(systemName: filterStore.tag == nil ? "tag" : "tag.fill")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.system(size: 12, weight: .medium))
                 Text(filterStore.tag.map { "#\($0)" } ?? "Tags")
-                    .font(.caption.weight(.medium))
                     .lineLimit(1)
                 Image(systemName: isPresented ? "chevron.up" : "chevron.down")
-                    .font(.system(size: 8, weight: .semibold))
+                    .font(.system(size: 9, weight: .semibold))
             }
+            .font(.caption.weight(.medium))
             .foregroundStyle(filterStore.tag.map { tagStore.color(for: $0) } ?? Color.secondary)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .frame(minHeight: 30)
             .liquidGlassCapsule()
         }
         .buttonStyle(.plain)
@@ -131,8 +132,9 @@ private struct TagPickerContent: View {
                 }
             }
             .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .liquidGlassField(in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .padding(.vertical, 7)
+            .frame(minHeight: 30)
+            .liquidGlassField(in: Capsule())
             .padding(8)
 
             Divider()
@@ -207,6 +209,7 @@ private struct TagPickerContent: View {
             }
         }
         .frame(width: 252, height: 300)
+        .liquidGlassGrouping()
         .onAppear {
             DispatchQueue.main.async {
                 searchFocused = true
@@ -416,7 +419,7 @@ private struct TagPopoverPresenter: NSViewRepresentable {
                 let popover = self.popover ?? makePopover(content: content)
                 self.popover = popover
                 if let hosting = popover.contentViewController as? NSHostingController<AnyView> {
-                    hosting.rootView = content
+                    hosting.rootView = appearanceAwareContent(content)
                 }
                 Task { @MainActor [weak popover] in
                     popover?.contentViewController?.view.window?.appearance = SettingsStore.shared.appearance.nsAppearance
@@ -441,8 +444,13 @@ private struct TagPopoverPresenter: NSViewRepresentable {
             popover.behavior = .transient
             popover.animates = false
             popover.delegate = self
-            popover.contentViewController = NSHostingController(rootView: content)
+            popover.contentViewController = NSHostingController(rootView: appearanceAwareContent(content))
             return popover
+        }
+
+        private func appearanceAwareContent(_ content: AnyView) -> AnyView {
+            let settings = MainActor.assumeIsolated { SettingsStore.shared }
+            return AnyView(content.remrAppearance(using: settings))
         }
 
         func popoverDidClose(_ notification: Notification) {

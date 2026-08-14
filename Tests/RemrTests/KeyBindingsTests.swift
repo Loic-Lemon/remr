@@ -39,6 +39,18 @@ final class KeyBindingsTests: XCTestCase {
         XCTAssertEqual(store.combo(for: .quickAdd), combo)
     }
 
+    func testOpenCalendarDefaultAndLabel() {
+        let combo = KeyCombo([.modifier(.option), .modifier(.command), .key(8)]) // kVK_ANSI_C
+        XCTAssertEqual(DefaultBindings.all[.openCalendar], combo)
+        XCTAssertEqual(combo.displayString, "⌥⌘C")
+        XCTAssertEqual(BindableAction.openCalendar.label, "Open calendar view")
+        XCTAssertTrue(BindableAction.openCalendar.isGlobalHotkey)
+        XCTAssertEqual(combo.globalHotkeyKeyCode, 8)
+
+        let (store, _) = makeStore()
+        XCTAssertEqual(store.combo(for: .openCalendar), combo)
+    }
+
     func testKeyComboCodableRoundTrip() {
         let combo = KeyCombo([.modifier(.command), .key(3)])
         let data = try! JSONEncoder().encode(combo)

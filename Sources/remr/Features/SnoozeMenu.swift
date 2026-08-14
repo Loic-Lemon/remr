@@ -26,6 +26,9 @@ struct SnoozeMenu: View {
             snoozeButton("Next Monday", systemImage: "calendar") {
                 onChoice(.nextMonday)
             }
+            snoozeButton("This weekend", systemImage: "moon.zzz") {
+                onChoice(.thisWeekend)
+            }
 
             Divider()
                 .padding(.vertical, 4)
@@ -39,7 +42,8 @@ struct SnoozeMenu: View {
         }
         .padding(8)
         .frame(width: 190)
-        .liquidGlassField(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .liquidGlassPane(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .liquidGlassGrouping()
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Snooze options")
     }

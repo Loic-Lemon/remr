@@ -66,7 +66,8 @@ struct SnoozeDatePickerView: View {
         }
         .padding(14)
         .frame(width: 310)
-        .liquidGlassField(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .liquidGlassPane(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .liquidGlassGrouping()
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Custom snooze date")
     }

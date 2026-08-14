@@ -9,7 +9,6 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
     case system
     case light
     case dark
-
     var id: Self { self }
 
     var label: String {
@@ -35,6 +34,33 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
         }
     }
 }
+/// Keeps SwiftUI semantic colors and AppKit window appearance on the same
+/// appearance value. Without this, explicit Light/Dark modes only reached
+/// some roots while Follow System relied on the hosting window's inherited
+/// color scheme, making opacity-based fills and hairlines resolve differently.
+private struct RemrAppearanceModifier: ViewModifier {
+    @ObservedObject private var settings: SettingsStore
+    @Environment(\.colorScheme) private var inheritedColorScheme
+
+    init(settings: SettingsStore) {
+        _settings = ObservedObject(wrappedValue: settings)
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.colorScheme, settings.appearance.colorScheme ?? inheritedColorScheme)
+    }
+}
+
+extension View {
+    /// Resolves semantic SwiftUI colors from the same user-selected appearance
+    /// that AppKit applies to the hosting window.
+    func remrAppearance(using settings: SettingsStore) -> some View {
+        modifier(RemrAppearanceModifier(settings: settings))
+    }
+}
+
+ 
 
 /// Menu bar icon style: automatic (system black/white), accent (the macOS
 /// accent colour), or custom (any user-picked colour).
@@ -61,6 +87,23 @@ enum MenuBarIconStyle: String, CaseIterable, Identifiable {
         case "template": return .automatic
         case "monochrome": return .accent
         default: return .accent
+        }
+    }
+}
+
+/// Optional count shown on the menu bar icon.
+enum MenuBarIconBadge: String, CaseIterable, Identifiable {
+    case none
+    case overdue
+    case dueToday
+
+    var id: Self { self }
+
+    var label: String {
+        switch self {
+        case .none: return "None"
+        case .overdue: return "Overdue"
+        case .dueToday: return "Due today"
         }
     }
 }
@@ -117,6 +160,8 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var menuBarIconStyle: MenuBarIconStyle
     /// Custom menu bar icon color (used when style is .custom).
     @Published private(set) var menuBarIconColor: Color
+    /// Menu bar icon badge (count shown on the icon).
+    @Published private(set) var menuBarIconBadge: MenuBarIconBadge
 
     /// Shown under the Keyboard section; set by assign() or by AppDelegate on
     /// hotkey registration failure.
@@ -133,6 +178,7 @@ final class SettingsStore: ObservableObject {
     private let appearanceKey = "remr.appearance"
     private let menuBarIconSymbolKey = "remr.menuBarIconSymbol"
     private let menuBarIconStyleKey = "remr.menuBarIconStyle"
+    private let menuBarIconBadgeKey = "remr.menuBarIconBadge"
     /// Canonical sRGB components [r, g, b, a] — the single persisted form so a
     /// reloaded color is always the exact representation the picker set.
     private let menuBarIconColorRGBAKey = "remr.menuBarIconColorRGBA"
@@ -145,6 +191,7 @@ final class SettingsStore: ObservableObject {
         appearance = AppearanceMode(rawValue: defaults.string(forKey: appearanceKey) ?? "") ?? .system
         menuBarIconSymbol = MenuBarIconSymbol(rawValue: defaults.string(forKey: menuBarIconSymbolKey) ?? "") ?? .bellBadge
         menuBarIconStyle = MenuBarIconStyle.load(rawValue: defaults.string(forKey: menuBarIconStyleKey))
+        menuBarIconBadge = MenuBarIconBadge(rawValue: defaults.string(forKey: menuBarIconBadgeKey) ?? "") ?? .none
         menuBarIconColor = Self.loadColor(defaults: defaults,
                                           rgbaKey: menuBarIconColorRGBAKey,
                                           legacyKey: menuBarIconColorKey) ?? .accentColor
@@ -160,13 +207,18 @@ final class SettingsStore: ObservableObject {
     func setMenuBarIconSymbol(_ symbol: MenuBarIconSymbol) {
         guard menuBarIconSymbol != symbol else { return }
         menuBarIconSymbol = symbol
-        defaults.set(symbol.rawValue, forKey: menuBarIconSymbolKey)
     }
 
     func setMenuBarIconStyle(_ style: MenuBarIconStyle) {
         guard menuBarIconStyle != style else { return }
         menuBarIconStyle = style
         defaults.set(style.rawValue, forKey: menuBarIconStyleKey)
+    }
+
+    func setMenuBarIconBadge(_ badge: MenuBarIconBadge) {
+        guard menuBarIconBadge != badge else { return }
+        menuBarIconBadge = badge
+        defaults.set(badge.rawValue, forKey: menuBarIconBadgeKey)
     }
 
     func setMenuBarIconColor(_ color: Color) {

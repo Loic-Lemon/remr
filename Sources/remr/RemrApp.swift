@@ -16,6 +16,7 @@ private struct StandaloneSettingsRoot: View {
     var body: some View {
         SettingsView()
             .environmentObject(settings)
+            .remrAppearance(using: settings)
             .background(SettingsWindowAppearanceBridge(mode: settings.appearance))
     }
 }
