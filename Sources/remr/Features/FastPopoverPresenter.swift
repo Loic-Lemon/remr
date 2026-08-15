@@ -91,6 +91,16 @@ struct FastPopoverPresenter: NSViewRepresentable {
                    event.window === popoverWindow {
                     return event
                 }
+                // Clicks in our own presented sheets (e.g. the
+                // "Delete Forever?" confirmation dialog) are part of the
+                // popover's flow — a click there must not dismiss it.
+                if let clicked = event.window {
+                    if clicked.isSheet { return event }
+                    if let popoverWindow = popover.contentViewController?.view.window,
+                       clicked.parent === popoverWindow {
+                        return event
+                    }
+                }
                 if let anchor = self.anchor, event.window === anchor.window {
                     let point = anchor.convert(event.locationInWindow, from: nil)
                     if anchor.bounds.contains(point) {

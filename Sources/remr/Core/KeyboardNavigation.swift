@@ -140,14 +140,18 @@ enum ListNavigation {
                      deleted: [DeletedReminder], showDeleted: Bool,
                      hidesTabs: Bool = false) -> [NavigableRow] {
         if isSearching {
-            // Recovery tabs are hidden during search; completed matches (when
-            // shown) follow the active matches. All of them — no 5-row cap —
-            // because a search is explicitly looking for those reminders.
+            // Recovery tabs are hidden during search; completed and deleted
+            // matches (when shown) follow the active matches. All of them —
+            // no 5-row cap — because a search is explicitly looking for
+            // those reminders.
             var rows: [NavigableRow] = filtered.map { .reminder($0.calendarItemIdentifier) }
             if showCompleted {
                 rows.append(contentsOf: completed.map { (r: EKReminder) in
                     .reminder(r.calendarItemIdentifier)
                 })
+            }
+            if showDeleted {
+                rows.append(contentsOf: deleted.map { .deleted($0.id) })
             }
             return rows
         }
@@ -168,7 +172,7 @@ enum ListNavigation {
             if !deleted.isEmpty {
                 rows.append(.tabHeader(.deleted))
                 if showDeleted {
-                    rows.append(contentsOf: deleted.prefix(5).map { .deleted($0.id) })
+                    rows.append(contentsOf: deleted.map { .deleted($0.id) })
                 }
             }
         }

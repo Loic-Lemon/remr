@@ -330,6 +330,133 @@ private func chipColor(for reminder: EKReminder) -> Color {
     return firstTag.flatMap { TagStore.shared.color(for: $0) } ?? Color.accentColor
 }
 
+/// Compact week strip: the seven days of `date`'s week. The `date` day fills
+/// accent, today gets an accent outline plus a "TODAY" label, and days in
+/// `reminderDays` show a dot. Shared by the detail page and the popover's
+/// bottom calendar.
+struct MiniWeekView: View {
+    let calendar: Calendar
+    let date: Date
+    let today: Date
+    /// startOfDay → incomplete reminders due that day (red badge).
+    var activeCounts: [Date: Int] = [:]
+    /// startOfDay → completed reminders due that day (gray badge).
+    var completedCounts: [Date: Int] = [:]
+    /// True (default) wraps the strip in its own inset card; false lets the
+    /// parent surface (e.g. the popover's bottom glass band) carry it.
+    var inset: Bool = true
+
+    var body: some View {
+        Group {
+            if inset {
+                stripContent
+                    .padding(8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color.primary.opacity(0.05))
+                    )
+            } else {
+                stripContent
+            }
+        }
+    }
+
+    /// Compact week strip: faint day names above each day, the date number
+    /// (the anchor day filled accent, today outlined) with the active (red)
+    /// and completed (gray) counts to its right, and the week number of the
+    /// year at the far left. One HStack, so all columns stay aligned.
+    private var stripContent: some View {
+        let weekStart = CalendarGridMath.startOfWeek(for: date, calendar: calendar)
+        let weekNumber = calendar.component(.weekOfYear, from: date)
+        return HStack(spacing: 0) {
+            Text("W\(weekNumber)")
+                .font(.system(size: 9, weight: .semibold, design: .rounded))
+                .foregroundStyle(.secondary)
+                .frame(width: 34, alignment: .leading)
+            ForEach(0..<7, id: \.self) { i in
+                let day = calendar.date(byAdding: .day, value: i, to: weekStart)!
+                let dayStart = calendar.startOfDay(for: day)
+                let isDue = calendar.isDate(day, inSameDayAs: date)
+                let isToday = calendar.isDate(day, inSameDayAs: today)
+                let active = activeCounts[dayStart] ?? 0
+                let completed = completedCounts[dayStart] ?? 0
+                // A dedicated blue for today's markers: the user accent can be
+                // anything, but this one is readable on the glass in both
+                // appearances.
+                let markerBlue = Color.blue
+                VStack(spacing: 2) {
+                    Text(calendar.shortWeekdaySymbols[calendar.component(.weekday, from: day) - 1])
+                        .font(.system(size: 8, weight: .medium, design: .rounded))
+                        .foregroundStyle(.secondary)
+                    // The date number: always centered in the column.
+                    Text("\(calendar.component(.day, from: day))")
+                        .font(.system(size: 12.5, weight: isDue ? .semibold : .regular, design: .rounded))
+                        .tracking(0.3)
+                        .foregroundStyle((isDue || isToday) ? markerBlue : Color.primary)
+                        .frame(width: 24, height: 18)
+                        .background {
+                            if !isDue && isToday {
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .strokeBorder(markerBlue.opacity(0.55), lineWidth: 1.2)
+                            }
+                        }
+                    // Marker row, in the same 24pt slot as the number:
+                    // one count centered, both sharing red-left/gray-right,
+                    // the today dot alone when the day has no counts.
+                    HStack(spacing: 3) {
+                        if active > 0 && completed > 0 {
+                            Text("\(active)")
+                                .font(.system(size: 7.5, weight: .semibold, design: .rounded))
+                                .monospacedDigit()
+                                .tracking(0.4)
+                                .foregroundStyle(.red)
+                            Spacer(minLength: 0)
+                            Text("\(completed)")
+                                .font(.system(size: 7.5, weight: .semibold, design: .rounded))
+                                .monospacedDigit()
+                                .tracking(0.4)
+                                .foregroundStyle(.gray)
+                        } else if active > 0 {
+                            Spacer(minLength: 0)
+                            Text("\(active)")
+                                .font(.system(size: 7.5, weight: .semibold, design: .rounded))
+                                .monospacedDigit()
+                                .tracking(0.4)
+                                .foregroundStyle(.red)
+                            Spacer(minLength: 0)
+                        } else if completed > 0 {
+                            Spacer(minLength: 0)
+                            Text("\(completed)")
+                                .font(.system(size: 7.5, weight: .semibold, design: .rounded))
+                                .monospacedDigit()
+                                .tracking(0.4)
+                                .foregroundStyle(.gray)
+                            Spacer(minLength: 0)
+                        } else if isDue {
+                            Spacer(minLength: 0)
+                            Circle()
+                                .fill(markerBlue)
+                                .frame(width: 3, height: 3)
+                            Spacer(minLength: 0)
+                        }
+                    }
+                    .frame(width: 24, height: 9)
+                }
+                .frame(maxWidth: .infinity)
+            }
+            Text(monthLabel)
+                .font(.system(size: 9, weight: .semibold, design: .rounded))
+                .foregroundStyle(.secondary)
+                .frame(width: 34, alignment: .trailing)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var monthLabel: String {
+        calendar.shortMonthSymbols[calendar.component(.month, from: date) - 1].uppercased()
+    }
+}
+
 /// Seven-column month grid modeled on ReminderEditView's MonthCalendar, but
 /// cells show that day's due reminders instead of picking a date. Drag is
 /// tracked manually (DragGesture + frame preferences): SwiftUI's onDrag
@@ -742,10 +869,10 @@ private struct ReminderChip: View {
     }
 }
 
-/// The snooze context-menu items (presets + custom + clear), shared by chips
-/// and day rows.
+/// The snooze context-menu items (presets + custom + clear), shared by chips,
+/// day rows, and the detail page's overflow menu.
 @ViewBuilder
-private func snoozeMenuItems(for reminder: EKReminder, actions: CalendarActions) -> some View {
+func snoozeMenuItems(for reminder: EKReminder, actions: CalendarActions) -> some View {
     Button { actions.onSnooze(reminder, .oneHour) } label: { Label("1 hour", systemImage: "clock") }
     Button { actions.onSnooze(reminder, .laterToday) } label: { Label("Later today", systemImage: "sun.max") }
     Button { actions.onSnooze(reminder, .tomorrowMorning) } label: { Label("Tomorrow morning", systemImage: "sunrise") }

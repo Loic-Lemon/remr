@@ -19,6 +19,14 @@ enum StatusIcon {
     /// symbol at the status bar's point size, with a little breathing room.
     static let canvasSize = NSSize(width: 18, height: 18)
 
+    /// Glyph configuration for the menu bar icons. The default (regular)
+    /// weight reads thin at menu-bar size; one step heavier keeps the outline
+    /// legible without looking bold. Weight can only be set alongside a point
+    /// size, and 13 pt is what `NSImage(systemSymbolName:)` resolves to by
+    /// default — pinning the same size here keeps each glyph's bounding box
+    /// (and so the popover anchor) unchanged while thickening the stroke.
+    private static let glyphConfiguration = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
+
     /// The current icon as an image. Shared by the status item and the live
     /// preview in Settings.
     static func image(symbol: MenuBarIconSymbol,
@@ -33,14 +41,25 @@ enum StatusIcon {
         let icon: NSImage
         switch style {
         case .automatic:
-            icon = normalized(base, isTemplate: true)
+            icon = normalized(configured(base, color: nil), isTemplate: true)
         case .accent:
-            icon = normalized(tinted(base, with: accentColor), isTemplate: false)
+            icon = normalized(configured(base, color: accentColor), isTemplate: false)
         case .custom:
-            icon = normalized(tinted(base, with: NSColor(color)), isTemplate: false)
+            icon = normalized(configured(base, color: NSColor(color)), isTemplate: false)
         }
         guard badge != .none && count > 0 else { return icon }
         return badged(icon, count: count, isTemplate: icon.isTemplate)
+    }
+
+    /// Applies the menu bar stroke weight — and, when tinting, the palette
+    /// colour — as one merged symbol configuration. Merging with `applying(_:)`
+    /// keeps the weight when a colour is added.
+    private static func configured(_ base: NSImage, color: NSColor?) -> NSImage {
+        var configuration = glyphConfiguration
+        if let color {
+            configuration = configuration.applying(NSImage.SymbolConfiguration(paletteColors: [color]))
+        }
+        return base.withSymbolConfiguration(configuration) ?? base
     }
 
     /// Apply the current icon settings to a status button.
@@ -68,28 +87,60 @@ enum StatusIcon {
         return resolved
     }
 
-    /// Bake a single color into the symbol.
-    private static func tinted(_ base: NSImage, with color: NSColor) -> NSImage {
-        let configuration = NSImage.SymbolConfiguration(paletteColors: [color])
-        return base.withSymbolConfiguration(configuration) ?? base
+    /// Rasterize `draw` onto the fixed-size canvas at 2× resolution and return
+    /// the result backed by a concrete bitmap.
+    ///
+    /// `NSImage(size:flipped:drawingHandler:)` produces a lazily rendered image
+    /// with no bitmap representation: the first context that draws it wins, and
+    /// that render is cached at the context's scale. On a 1× (non-Retina)
+    /// display the symbol gets rasterized at 18×18 pixels — coarse and aliased
+    /// — and that low-res cache then shows pixelated on Retina too. Rendering
+    /// at a fixed 2× gives Retina a native bitmap and lets AppKit anti-alias
+    /// the downscale on 1× displays.
+    private static func canvas(_ draw: (NSRect) -> Void) -> NSImage {
+        let scale: CGFloat = 2
+        let pixelWidth = Int(canvasSize.width * scale)
+        let pixelHeight = Int(canvasSize.height * scale)
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil,
+                                         pixelsWide: pixelWidth,
+                                         pixelsHigh: pixelHeight,
+                                         bitsPerSample: 8,
+                                         samplesPerPixel: 4,
+                                         hasAlpha: true,
+                                         isPlanar: false,
+                                         colorSpaceName: .deviceRGB,
+                                         bytesPerRow: 0,
+                                         bitsPerPixel: 0),
+              let context = NSGraphicsContext(bitmapImageRep: rep) else {
+            return NSImage(size: canvasSize)
+        }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        context.cgContext.scaleBy(x: scale, y: scale)
+        draw(NSRect(origin: .zero, size: canvasSize))
+        NSGraphicsContext.restoreGraphicsState()
+
+        rep.size = canvasSize
+        let image = NSImage(size: canvasSize)
+        image.addRepresentation(rep)
+        return image
     }
 
     /// Draw the symbol centered onto the fixed-size canvas. Template images
     /// draw their glyph shape (tinted later by the button); colored images
     /// carry their baked color.
     private static func normalized(_ image: NSImage, isTemplate: Bool) -> NSImage {
-        let canvas = NSImage(size: canvasSize, flipped: false) { rect in
+        let result = canvas { rect in
             let size = image.size
             let fit = min(1.0, min(rect.width / size.width, rect.height / size.height))
             let w = size.width * fit
             let h = size.height * fit
             let target = NSRect(x: rect.midX - w / 2, y: rect.midY - h / 2, width: w, height: h)
             image.draw(in: target)
-            return true
         }
-        canvas.isTemplate = isTemplate
-        canvas.accessibilityDescription = image.accessibilityDescription
-        return canvas
+        result.isTemplate = isTemplate
+        result.accessibilityDescription = image.accessibilityDescription
+        return result
     }
 
     /// Overlay a count disc on the top-right corner of the canvas.
@@ -100,7 +151,7 @@ enum StatusIcon {
     /// to light and dark menu bars. Accent and Custom styles bake red-on-white
     /// as drawn.
     private static func badged(_ base: NSImage, count: Int, isTemplate: Bool) -> NSImage {
-        let composite = NSImage(size: canvasSize, flipped: false) { rect in
+        let result = canvas { rect in
             base.draw(in: rect)
 
             let center = NSPoint(x: rect.width - 6, y: rect.height - 6)
@@ -119,10 +170,9 @@ enum StatusIcon {
             text.draw(at: NSPoint(x: center.x - textSize.width / 2,
                                   y: center.y - textSize.height / 2),
                       withAttributes: attributes)
-            return true
         }
-        composite.isTemplate = isTemplate
-        composite.accessibilityDescription = base.accessibilityDescription
-        return composite
+        result.isTemplate = isTemplate
+        result.accessibilityDescription = base.accessibilityDescription
+        return result
     }
 }

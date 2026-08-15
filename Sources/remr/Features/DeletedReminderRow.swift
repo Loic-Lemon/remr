@@ -11,6 +11,7 @@ struct DeletedReminderRow: View {
     @State private var restoreError: String?
     @State private var confirmDeleteForever = false
     @State private var isHovered = false
+    @State private var isRestoring = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -24,8 +25,11 @@ struct DeletedReminderRow: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Restore") {
+                Button {
+                    guard !isRestoring else { return }
+                    isRestoring = true
                     Task { @MainActor in
+                        defer { isRestoring = false }
                         do {
                             try await store.restore(deleted)
                             restoreError = nil
@@ -34,9 +38,19 @@ struct DeletedReminderRow: View {
                             restoreError = error.localizedDescription
                         }
                     }
+                } label: {
+                    HStack(spacing: 4) {
+                        if isRestoring {
+                            ProgressView()
+                                .controlSize(.mini)
+                        }
+                        Text(isRestoring ? "Restoring…" : "Restore")
+                    }
+                    .frame(minWidth: 64)
                 }
                 .liquidGlassButtonStyle(.bordered)
                 .controlSize(.small)
+                .disabled(isRestoring)
                 Button {
                     confirmDeleteForever = true
                 } label: {

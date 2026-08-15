@@ -41,11 +41,12 @@ final class SnoozeCalculatorTests: XCTestCase {
                      expected: now.addingTimeInterval(3600))
     }
 
-    func testLaterTodayUsesCurrentCalendarDayAtFive() {
-        let now = date(2026, 8, 11, 8, 15)
+    func testLaterTodayIsThreeHoursFromNow() {
+        // 18:00 + 3h = 21:00 — a fixed 17:00 would land in the past here.
+        let now = date(2026, 8, 11, 18, 0)
         assertChoice(.laterToday,
                      now: now,
-                     expected: date(2026, 8, 11, 17))
+                     expected: now.addingTimeInterval(3 * 3600))
     }
 
     func testTomorrowChoicesCrossMidnightAndMonthBoundary() {

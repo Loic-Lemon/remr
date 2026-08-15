@@ -124,6 +124,26 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Toggle("Show week calendar", isOn: Binding(
+                            get: { settings.showBottomCalendar },
+                            set: { settings.setShowBottomCalendar($0) }
+                        ))
+                        .toggleStyle(.switch)
+                        .accessibilityLabel("Show week calendar")
+                        Text("Shows the current week's calendar at the bottom of the popover, with red counts for active reminders and gray counts for completed ones on each day.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    .padding(.bottom, 16)
+                } header: {
+                    settingsSubheading("Calendar")
+                }
+
+                Section {
                     VStack(alignment: .leading, spacing: 18) {
                         ForEach(BindableAction.allCases) { action in
                             bindingRow(for: action)

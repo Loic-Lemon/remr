@@ -18,8 +18,9 @@ enum SnoozeCalculator {
             return (now.addingTimeInterval(60 * 60), true)
 
         case .laterToday:
-            return dateAt(hour: 17, on: calendar.startOfDay(for: now), calendar: calendar)
-                .map { ($0, true) }
+            // Relative to now, not a fixed clock time: a fixed 17:00 lands in
+            // the past (and immediately overdue) once it's evening.
+            return (now.addingTimeInterval(3 * 60 * 60), true)
 
         case .tomorrowMorning:
             return tomorrow(now: now, calendar: calendar)

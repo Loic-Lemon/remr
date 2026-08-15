@@ -162,6 +162,8 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var menuBarIconColor: Color
     /// Menu bar icon badge (count shown on the icon).
     @Published private(set) var menuBarIconBadge: MenuBarIconBadge
+    /// Shows the current week's calendar at the bottom of the main popover.
+    @Published private(set) var showBottomCalendar: Bool
 
     /// Shown under the Keyboard section; set by assign() or by AppDelegate on
     /// hotkey registration failure.
@@ -184,6 +186,7 @@ final class SettingsStore: ObservableObject {
     private let menuBarIconColorRGBAKey = "remr.menuBarIconColorRGBA"
     /// Legacy persisted form (archived NSColor) from before canonicalization.
     private let menuBarIconColorKey = "remr.menuBarIconColor"
+    private let showBottomCalendarKey = "remr.showBottomCalendar"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -195,6 +198,7 @@ final class SettingsStore: ObservableObject {
         menuBarIconColor = Self.loadColor(defaults: defaults,
                                           rgbaKey: menuBarIconColorRGBAKey,
                                           legacyKey: menuBarIconColorKey) ?? .accentColor
+        showBottomCalendar = defaults.object(forKey: showBottomCalendarKey) as? Bool ?? true
         errorMessage = nil
     }
 
@@ -227,6 +231,12 @@ final class SettingsStore: ObservableObject {
         guard menuBarIconColor != canonical else { return }
         menuBarIconColor = canonical
         defaults.set(rgba, forKey: menuBarIconColorRGBAKey)
+    }
+
+    func setShowBottomCalendar(_ enabled: Bool) {
+        guard showBottomCalendar != enabled else { return }
+        showBottomCalendar = enabled
+        defaults.set(enabled, forKey: showBottomCalendarKey)
     }
 
     /// Reduce a color to rounded sRGB components (6 decimal places). The

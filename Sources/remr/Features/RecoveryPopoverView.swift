@@ -20,6 +20,7 @@ struct RecoveryPopoverView: View {
 
     @State private var selectedTab: RecoveryTab = .completed
     @State private var selectedCompletedID: String?
+    @State private var deletedSearchText = ""
     var body: some View {
         VStack(spacing: 0) {
             RemrPopoverHeader(
@@ -43,6 +44,35 @@ struct RecoveryPopoverView: View {
             .liquidGlassField(in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
+
+            Divider()
+
+            if selectedTab == .deleted {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextField("Search recently deleted", text: $deletedSearchText)
+                        .textFieldStyle(.plain)
+                        .font(.callout)
+                    if !deletedSearchText.isEmpty {
+                        Button {
+                            deletedSearchText = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Clear search")
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .liquidGlassField(in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+            }
 
             Divider()
 
@@ -95,21 +125,35 @@ struct RecoveryPopoverView: View {
         }
     }
 
+    /// Recently deleted filtered by the tab's own search field.
+    private var filteredDeleted: [DeletedReminder] {
+        let trimmed = deletedSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return store.recentlyDeleted }
+        let query = SearchParser.parse(trimmed)
+        return store.recentlyDeleted.filter {
+            SearchParser.matches(query: query,
+                                 calendarTitle: nil,
+                                 priority: $0.priority,
+                                 title: $0.title,
+                                 notes: $0.notes)
+        }
+    }
+
     @ViewBuilder
     private var deletedContent: some View {
-        if store.recentlyDeleted.isEmpty {
-            emptyState(title: "No recently deleted reminders", systemImage: "trash")
+        if filteredDeleted.isEmpty {
+            emptyState(title: deletedSearchText.isEmpty
+                       ? "No recently deleted reminders"
+                       : "No matches in recently deleted",
+                       systemImage: "trash")
         } else {
             LazyVStack(spacing: 0) {
-                ForEach(store.recentlyDeleted.prefix(5)) { deleted in
+                ForEach(filteredDeleted) { deleted in
                     DeletedReminderRow(
                         deleted: deleted,
                         onRestored: { onRestored(deleted) },
                         onDeletedForever: { onDeletedForever(deleted) }
                     )
-                }
-                if store.recentlyDeleted.count > 5 {
-                    moreItemsHint(count: store.recentlyDeleted.count - 5)
                 }
             }
         }

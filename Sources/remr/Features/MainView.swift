@@ -75,6 +75,9 @@ struct MainView: View {
     @State private var reservedTopHeight: CGFloat = 0
     /// The exact chord that last fired an action; nil = nothing fired yet.
     @State private var firedKeys: Set<UInt16>?
+    /// Height of the bottom glass band (week calendar + sync footer), so the
+    /// action toast floats above it instead of rising through it.
+    @State private var bottomBandHeight: CGFloat = 0
 
     /// All incomplete reminders, chronological (store's sort: due asc, nil last, title).
     private var allItems: [EKReminder] {
@@ -184,6 +187,26 @@ struct MainView: View {
         Set((store.allReminders + store.completedReminders).map(\.calendarItemIdentifier))
     }
 
+    /// The detail page with the main popover's mutation handlers attached.
+    private func detailPage(for reminder: EKReminder) -> some View {
+        ReminderDetailView(reminder: reminder,
+                           onClose: {
+                               self.selection = nil
+                               self.viewingReminder = nil
+                           },
+                           onEdit: { target in
+                               self.viewingReminder = nil
+                               self.editingReminder = target
+                           },
+                           onDuplicate: duplicateReminder,
+                           onMoveToList: moveReminder,
+                           onDelete: { target in
+                               performDelete(target)
+                               self.viewingReminder = nil
+                           },
+                           onCopyTitle: copyReminderTitle)
+    }
+
     /// The flat navigable order, mirroring listArea's render order exactly,
     /// so the arrow-key selection can never drift from what is on screen.
     private var navRows: [NavigableRow] {
@@ -202,15 +225,13 @@ struct MainView: View {
             if showSettings {
                 SettingsView(onClose: { showSettings = false })
             } else if let viewingReminder {
-                ReminderDetailView(reminder: viewingReminder,
-                                   onClose: { self.viewingReminder = nil },
-                                   onEdit: { reminder in
-                                       self.viewingReminder = nil
-                                       self.editingReminder = reminder
-                                   })
+                detailPage(for: viewingReminder)
             } else if let editingReminder {
                 ReminderEditView(reminder: editingReminder,
-                                 onCancel: { self.editingReminder = nil },
+                                 onCancel: {
+                                     self.selection = nil
+                                     self.editingReminder = nil
+                                 },
                                  onSaved: { identifier in
                                      self.undoEntry = nil
                                      self.selection = .reminder(identifier)
@@ -373,6 +394,7 @@ struct MainView: View {
                     .first(where: { $0.calendarItemIdentifier == id }) else { return }
             showSettings = false
             editingReminder = nil
+            selection = nil
             viewingReminder = reminder
         }
         .background(WindowProbe { popoverWindow = $0 })
@@ -525,6 +547,36 @@ struct MainView: View {
         .zIndex((showTagFilter || showRecovery) ? 10 : 0)
     }
 
+    /// The current week's calendar pinned under the list (opt-in setting):
+    /// today filled, red/gray count badges per day. Plain, sitting on the
+    /// popover glass above the sync footer's band.
+    private var bottomCalendarContent: some View {
+        MiniWeekView(calendar: .current,
+                     date: Date(),
+                     today: Date(),
+                     activeCounts: dayCounts.active,
+                     completedCounts: dayCounts.completed,
+                     inset: false)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+    }
+
+    /// Incomplete (red) and completed (gray) reminder counts per startOfDay.
+    private var dayCounts: (active: [Date: Int], completed: [Date: Int]) {
+        let calendar = Calendar.current
+        var active: [Date: Int] = [:]
+        for reminder in store.allReminders where !reminder.isCompleted {
+            guard let date = reminder.dueDateComponents.flatMap({ calendar.date(from: $0) }) else { continue }
+            active[calendar.startOfDay(for: date), default: 0] += 1
+        }
+        var completed: [Date: Int] = [:]
+        for reminder in store.completedReminders {
+            guard let date = reminder.dueDateComponents.flatMap({ calendar.date(from: $0) }) else { continue }
+            completed[calendar.startOfDay(for: date), default: 0] += 1
+        }
+        return (active, completed)
+    }
+
     private var syncFooter: some View {
         TimelineView(.periodic(from: .now, by: 10)) { context in
             Group {
@@ -661,7 +713,25 @@ struct MainView: View {
             }
             .scrollIndicators(.hidden)
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                syncFooter
+                // Two distinct glass surfaces: the week calendar's full-width
+                // band, a hairline divider, then the sync footer's own band.
+                VStack(spacing: 0) {
+                    if settings.showBottomCalendar {
+                        // The calendar's upper border, then the strip, then
+                        // the footer's border.
+                        Divider().opacity(0.45)
+                        bottomCalendarContent
+                        Divider().opacity(0.45)
+                    }
+                    syncFooter
+                }
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(key: BottomBandHeightKey.self,
+                                               value: geo.size.height)
+                    }
+                )
+                .onPreferenceChange(BottomBandHeightKey.self) { bottomBandHeight = $0 }
             }
             // Clicking empty list space (below the rows, on a section header,
             // between items) clears the selection; rows and their buttons
@@ -675,9 +745,11 @@ struct MainView: View {
                             contentOpacity: toastContentOpacity)
                     // Pure state-driven motion (no transitions): always a
                     // clean vertical rise and fade, straight up from below.
+                    // Sits above the bottom glass band so it never rises
+                    // through the week calendar.
                     .offset(y: toastPresented ? 0 : 36)
                     .opacity(toastPresented ? 1 : 0)
-                    .padding(.bottom, 12)
+                    .padding(.bottom, bottomBandHeight + 12)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1083,6 +1155,14 @@ struct MainView: View {
 /// MainView reserves this space in the fixed list layer so the composer can
 /// expand over the list instead of pushing it down.
 private struct TopBlockHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+/// Height of the bottom glass band (week calendar + sync footer).
+private struct BottomBandHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
