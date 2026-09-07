@@ -544,14 +544,16 @@ private struct MonthGrid: View {
                 }
             }
             ZStack(alignment: .topLeading) {
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 7),
-                          spacing: showTimeline ? 0 : 4) {
-                    ForEach(0..<(leadingBlanks + daysInMonth), id: \.self) { index in
-                        if index < leadingBlanks {
-                            Color.clear
-                                .frame(height: 56)
-                        } else {
-                            dayCell(index - leadingBlanks + 1)
+                ScrollView(.vertical) {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 7),
+                              spacing: showTimeline ? 0 : 4) {
+                        ForEach(0..<(leadingBlanks + daysInMonth), id: \.self) { index in
+                            if index < leadingBlanks {
+                                Color.clear
+                                    .frame(height: 104)
+                            } else {
+                                dayCell(index - leadingBlanks + 1)
+                            }
                         }
                     }
                 }
@@ -629,11 +631,11 @@ private struct MonthGrid: View {
                 }
             }
         } else {
-            ForEach(items.prefix(3), id: \.calendarItemIdentifier) { reminder in
+            ForEach(items.prefix(4), id: \.calendarItemIdentifier) { reminder in
                 ReminderChip(reminder: reminder, color: chipColor(for: reminder), actions: actions,
                              onDragChanged: dragChanged, onDragEnded: dragEnded, onOpenDetail: onOpenDetail)
             }
-            if items.count > 3 { Text("+\(items.count - 3) more").font(.caption2).foregroundStyle(.secondary) }
+            if items.count > 4 { Text("+\(items.count - 4) more").font(.caption2).foregroundStyle(.secondary) }
         }
     }
 
@@ -650,7 +652,7 @@ private struct MonthGrid: View {
             dayItems(date: date, items: items)
             Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, minHeight: 56, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: 104, alignment: .topLeading)
         .padding(4)
         .background {
             if isToday || isDropTarget {
@@ -798,7 +800,7 @@ private struct WeekGrid: View {
             columnItems(date: date, items: items)
             Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, minHeight: 120, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: 300, alignment: .topLeading)
         .padding(4)
         .background {
             if isToday || isDropTarget {

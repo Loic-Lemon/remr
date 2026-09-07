@@ -44,3 +44,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **"Later today" snooze** — snoozes to three hours from now instead of a fixed 5 PM, which landed in the past (and immediately overdue) once it's evening.
 - **Popover dismissed by sheet clicks** — clicking a confirmation sheet (like "Delete Forever?") no longer closes the popover.
 - **Toast rises through the calendar** — the undo/action toast now floats above the bottom week calendar instead of overlapping it.
+- **Taller calendar cells** — month cells grow from 56pt to 104pt with vertical scrolling and show four reminders per day instead of three; week columns grow to 300pt, so days fit their items instead of clipping at two.
