@@ -81,6 +81,42 @@ final class ReminderStoreTests: XCTestCase {
         XCTAssertEqual(ReminderSection.section(for: farFuture, bounds: bounds), .future)
     }
 
+    func testMonthEndBoundaryDoesNotReverseRanges() {
+        // Regression: with `now` on the last day of a month, the week after
+        // next starts after next month begins, so THIS MONTH is empty. The old
+        // `..<` switch built a reversed Range there and trapped (EXC_BREAKPOINT)
+        // while rendering MainView. Bucketing must fall through to NEXT MONTH
+        // without crashing.
+        var c = DateComponents()
+        c.year = 2026
+        c.month = 8
+        c.day = 31   // Monday, last day of August
+        c.hour = 12
+        let monthEnd = Calendar.current.date(from: c)!
+        let bounds = ReminderSection.bounds(now: monthEnd, calendar: .current)
+
+        func sep(_ day: Int) -> Date {
+            var c = DateComponents()
+            c.year = 2026
+            c.month = 9
+            c.day = day
+            c.hour = 12
+            return Calendar.current.date(from: c)!
+        }
+
+        XCTAssertEqual(ReminderSection.section(for: sep(3), bounds: bounds), .thisWeek)
+        XCTAssertEqual(ReminderSection.section(for: sep(9), bounds: bounds), .nextWeek)
+        XCTAssertEqual(ReminderSection.section(for: sep(14), bounds: bounds), .nextMonth)
+        XCTAssertEqual(ReminderSection.section(for: sep(20), bounds: bounds), .nextMonth)
+
+        var oct = DateComponents()
+        oct.year = 2026
+        oct.month = 10
+        oct.day = 1
+        oct.hour = 12
+        XCTAssertEqual(ReminderSection.section(for: Calendar.current.date(from: oct)!, bounds: bounds), .future)
+    }
+
     func testAllDayTodayIsTodayNotOverdue() {
         // The regression that motivated Swift-side bucketing: an all-day
         // reminder due today must land in TODAY, never OVERDUE.

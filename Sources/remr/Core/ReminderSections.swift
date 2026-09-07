@@ -33,7 +33,7 @@ enum ReminderSection: String, CaseIterable {
         // week" is the remainder of the current week after today, "next week"
         // the following one. Month boundaries are calendar month starts.
         let startOfNextWeek = calendar.dateInterval(of: .weekOfYear, for: now)?.end ?? startOfTomorrow
-        let startOfWeekAfterNext = calendar.date(byAdding: .day, value: 7, to: startOfNextWeek) ?? startOfNextWeek
+        let startOfWeekAfterNext = calendar.date(byAdding: .weekOfYear, value: 1, to: startOfNextWeek) ?? startOfNextWeek
         let startOfNextMonth = calendar.dateInterval(of: .month, for: now)?.end ?? startOfWeekAfterNext
         let startOfMonthAfterNext = calendar.date(byAdding: .month, value: 1, to: startOfNextMonth) ?? startOfNextMonth
         return Bounds(startOfToday: startOfToday,
@@ -56,15 +56,19 @@ enum ReminderSection: String, CaseIterable {
     /// (compute `bounds()` once, reuse it).
     static func section(for due: Date?, bounds: Bounds) -> ReminderSection {
         guard let due else { return .future }
-        switch due {
-        case ..<bounds.startOfToday: return .overdue
-        case bounds.startOfToday..<bounds.startOfTomorrow: return .today
-        case bounds.startOfTomorrow..<bounds.startOfNextWeek: return .thisWeek
-        case bounds.startOfNextWeek..<bounds.startOfWeekAfterNext: return .nextWeek
-        case bounds.startOfWeekAfterNext..<bounds.startOfNextMonth: return .thisMonth
-        case bounds.startOfNextMonth..<bounds.startOfMonthAfterNext: return .nextMonth
-        default: return .future
-        }
+        // Compare in calendar-precedence order rather than building `..<`
+        // Range patterns. A range literal traps when its lower bound exceeds
+        // its upper bound, which happens near month boundaries: the week after
+        // next can start after next month begins. Plain `<` comparisons make
+        // the overlapping THIS MONTH bucket come up empty instead, and the
+        // next bucket wins — the same precedence the switch encoded.
+        if due < bounds.startOfToday { return .overdue }
+        if due < bounds.startOfTomorrow { return .today }
+        if due < bounds.startOfNextWeek { return .thisWeek }
+        if due < bounds.startOfWeekAfterNext { return .nextWeek }
+        if due < bounds.startOfNextMonth { return .thisMonth }
+        if due < bounds.startOfMonthAfterNext { return .nextMonth }
+        return .future
     }
     /// The section a reminder belongs to when ongoing markers are considered.
     /// Ongoing reminders are pinned ahead of chronological buckets without

@@ -14,12 +14,12 @@ https://github.com/user-attachments/assets/09ed40d6-ada5-4551-8618-8e6bea71c3eb
 - **Natural-language input** — `tomorrow at 5pm`, `@home`, `#groceries`, `&the office` become real reminder fields
 - **Quick Add** — ⌥⌘N opens a composer from anywhere
 - **Reminder detail page** — double-click a reminder for the full picture: notes, tags, list, priority, recurrence, location on a map, and a due-date countdown — plus one-tap snooze, duplicate, copy-title, move-to-list, and delete actions
-- **Calendar view** — ⌥⌘C: month, week, and day layouts; drag to reschedule, right-click to snooze; plus an at-a-glance week strip pinned to the popover (toggle in Settings)
+- **Calendar view** — ⌥⌘C: month, week, and day layouts; drag to reschedule, right-click to snooze; optional Gantt bars from today to each due date in the calendar footer; plus an at-a-glance week strip pinned to the popover (toggle in Settings)
 - **Editing, bulk create, snooze, tag manager** — power-user tooling, all keyboard-first
 - **Ongoing reminders** — pin reminders to a dedicated section without changing their due date
 - **Search & tags** — `@work`, `#urgent`, `!!`, or the tag dropdown; completed reminders are searchable too
 - **Archive** — restore completed or deleted reminders
-- **Appearance & icon** — Light/Dark/System, plus a customizable menu bar symbol, color, and overdue/due-today badge
+- **Appearance & icon** — Light/Dark/System, plus a customizable menu bar symbol (the fuller checklist glyph is the default), color, and overdue/due-today badge
 
 ## Install
 

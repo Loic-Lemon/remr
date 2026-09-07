@@ -37,10 +37,10 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(store.appearance, .system)
     }
 
-    func testMenuBarIconDefaultsToBellBadgeAccent() {
+    func testMenuBarIconDefaultsToChecklistAccent() {
         let store = SettingsStore(defaults: makeDefaults())
 
-        XCTAssertEqual(store.menuBarIconSymbol, .bellBadge)
+        XCTAssertEqual(store.menuBarIconSymbol, .checklist)
         XCTAssertEqual(store.menuBarIconStyle, .accent)
     }
 
@@ -87,14 +87,14 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(store.menuBarIconColor, .accentColor)
     }
 
-    func testInvalidPersistedMenuBarIconFallsBackToDefaults() {
+    func testInvalidPersistedMenuBarIconFallsBackToChecklist() {
         let defaults = makeDefaults()
         defaults.set("warpdrive", forKey: "remr.menuBarIconSymbol")
         defaults.set("neon", forKey: "remr.menuBarIconStyle")
 
         let store = SettingsStore(defaults: defaults)
 
-        XCTAssertEqual(store.menuBarIconSymbol, .bellBadge)
+        XCTAssertEqual(store.menuBarIconSymbol, .checklist)
         XCTAssertEqual(store.menuBarIconStyle, .accent)
     }
 
@@ -107,5 +107,34 @@ final class SettingsStoreTests: XCTestCase {
         let monochromeDefaults = makeDefaults()
         monochromeDefaults.set("monochrome", forKey: "remr.menuBarIconStyle")
         XCTAssertEqual(SettingsStore(defaults: monochromeDefaults).menuBarIconStyle, .accent)
+    }
+
+    func testHiddenListsDefaultToAllVisible() {
+        let store = SettingsStore(defaults: makeDefaults())
+        XCTAssertTrue(store.hiddenLists.isEmpty)
+    }
+
+    func testHiddenListsPersistAcrossInstances() {
+        let defaults = makeDefaults()
+        let store = SettingsStore(defaults: defaults)
+
+        store.setListHidden("list-groceries", true)
+        store.setListHidden("list-work", true)
+
+        let reloaded = SettingsStore(defaults: defaults)
+        XCTAssertEqual(reloaded.hiddenLists, ["list-groceries", "list-work"])
+        XCTAssertFalse(reloaded.hiddenLists.contains("list-personal"))
+
+        // Unhiding removes the identifier again.
+        reloaded.setListHidden("list-groceries", false)
+        let reloadedAgain = SettingsStore(defaults: defaults)
+        XCTAssertEqual(reloadedAgain.hiddenLists, ["list-work"])
+    }
+
+    func testHiddenListsTogglingIsIdempotent() {
+        let store = SettingsStore(defaults: makeDefaults())
+        store.setListHidden("list-groceries", true)
+        store.setListHidden("list-groceries", true)
+        XCTAssertEqual(store.hiddenLists, ["list-groceries"])
     }
 }

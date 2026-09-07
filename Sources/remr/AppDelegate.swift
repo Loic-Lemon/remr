@@ -593,11 +593,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window = newWindow
         }
 
-        // Fixed-size glass surface, clamped to the visible frame so the panel
-        // never overflows smaller screens. Sizing applies to reused windows
-        // too, so a reopen always presents the same panel.
-        let width = min(880, (screen?.visibleFrame.width ?? 1200) - 24)
-        let height = min(640, (screen?.visibleFrame.height ?? 800) - 24)
+        // Keep the hosting view from shrinking the panel back to its short
+        // intrinsic calendar height after AppKit sizes the window.
+        calendarHosting?.sizingOptions = []
+
+        // Display-sized glass surface, clamped to the visible frame so the
+        // panel never overflows smaller screens. Sizing applies to reused
+        // windows too, so a reopen always presents the same panel.
+        let availableWidth = max(320, (screen?.visibleFrame.width ?? 1440) - 24)
+        let availableHeight = max(320, (screen?.visibleFrame.height ?? 900) - 24)
+        // Use most of the available display instead of a fixed pixel height;
+        // large and Retina displays get room for more timeline lanes.
+        let width = min(1200, availableWidth * 0.75)
+        let height = min(1100, availableHeight)
         window.setContentSize(NSSize(width: width, height: height))
 
         // Restore the reusable panel before ordering it front. This keeps a

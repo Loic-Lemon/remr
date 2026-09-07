@@ -111,6 +111,7 @@ enum MenuBarIconBadge: String, CaseIterable, Identifiable {
 /// Predefined menu bar icons (SF Symbols).
 enum MenuBarIconSymbol: String, CaseIterable, Identifiable {
     case bellBadge = "bell.badge"
+    case checklist = "checklist"
     case bell = "bell"
     case checkmarkCircle = "checkmark.circle"
     case exclamationmarkCircle = "exclamationmark.circle"
@@ -126,6 +127,7 @@ enum MenuBarIconSymbol: String, CaseIterable, Identifiable {
     var label: String {
         switch self {
         case .bellBadge: return "Bell with badge"
+        case .checklist: return "Checklist"
         case .bell: return "Bell"
         case .checkmarkCircle: return "Checkmark circle"
         case .exclamationmarkCircle: return "Exclamation circle"
@@ -164,6 +166,9 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var menuBarIconBadge: MenuBarIconBadge
     /// Shows the current week's calendar at the bottom of the main popover.
     @Published private(set) var showBottomCalendar: Bool
+    /// Reminder lists (categories) hidden from the main list, keyed by
+    /// calendar identifier (empty = all visible).
+    @Published private(set) var hiddenLists: Set<String>
 
     /// Shown under the Keyboard section; set by assign() or by AppDelegate on
     /// hotkey registration failure.
@@ -187,18 +192,22 @@ final class SettingsStore: ObservableObject {
     /// Legacy persisted form (archived NSColor) from before canonicalization.
     private let menuBarIconColorKey = "remr.menuBarIconColor"
     private let showBottomCalendarKey = "remr.showBottomCalendar"
+    /// Persisted as calendar identifiers. Identifiers of lists deleted in
+    /// Reminders simply match nothing, so stale entries are harmless.
+    private let hiddenListsKey = "remr.hiddenLists"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         bindings = Self.load(defaults: defaults, bindingsKey: bindingsKey)
         appearance = AppearanceMode(rawValue: defaults.string(forKey: appearanceKey) ?? "") ?? .system
-        menuBarIconSymbol = MenuBarIconSymbol(rawValue: defaults.string(forKey: menuBarIconSymbolKey) ?? "") ?? .bellBadge
+        menuBarIconSymbol = MenuBarIconSymbol(rawValue: defaults.string(forKey: menuBarIconSymbolKey) ?? "") ?? .checklist
         menuBarIconStyle = MenuBarIconStyle.load(rawValue: defaults.string(forKey: menuBarIconStyleKey))
         menuBarIconBadge = MenuBarIconBadge(rawValue: defaults.string(forKey: menuBarIconBadgeKey) ?? "") ?? .none
         menuBarIconColor = Self.loadColor(defaults: defaults,
                                           rgbaKey: menuBarIconColorRGBAKey,
                                           legacyKey: menuBarIconColorKey) ?? .accentColor
         showBottomCalendar = defaults.object(forKey: showBottomCalendarKey) as? Bool ?? true
+        hiddenLists = Set(defaults.stringArray(forKey: hiddenListsKey) ?? [])
         errorMessage = nil
     }
 
@@ -211,6 +220,7 @@ final class SettingsStore: ObservableObject {
     func setMenuBarIconSymbol(_ symbol: MenuBarIconSymbol) {
         guard menuBarIconSymbol != symbol else { return }
         menuBarIconSymbol = symbol
+        defaults.set(symbol.rawValue, forKey: menuBarIconSymbolKey)
     }
 
     func setMenuBarIconStyle(_ style: MenuBarIconStyle) {
@@ -237,6 +247,17 @@ final class SettingsStore: ObservableObject {
         guard showBottomCalendar != enabled else { return }
         showBottomCalendar = enabled
         defaults.set(enabled, forKey: showBottomCalendarKey)
+    }
+
+    /// Toggle one reminder list's visibility in the main list; persisted as
+    /// the hidden lists' calendar identifiers, sorted for deterministic
+    /// storage.
+    func setListHidden(_ calendarIdentifier: String, _ hidden: Bool) {
+        guard hiddenLists.contains(calendarIdentifier) != hidden else { return }
+        var updated = hiddenLists
+        if hidden { updated.insert(calendarIdentifier) } else { updated.remove(calendarIdentifier) }
+        hiddenLists = updated
+        defaults.set(updated.sorted(), forKey: hiddenListsKey)
     }
 
     /// Reduce a color to rounded sRGB components (6 decimal places). The

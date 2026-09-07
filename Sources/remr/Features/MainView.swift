@@ -61,6 +61,8 @@ struct MainView: View {
     @State private var titleFocusRequest = 0
     @State private var showTagFilter = false
     @State private var showTagManager = false
+    /// List (category) visibility picker — which reminder lists to show/hide.
+    @State private var showListPicker = false
     @State private var notesFocusRequest = 0
     @FocusState private var searchFocused: Bool
     @State private var monitor: Any?                 // NSEvent local monitor token
@@ -75,13 +77,19 @@ struct MainView: View {
     @State private var reservedTopHeight: CGFloat = 0
     /// The exact chord that last fired an action; nil = nothing fired yet.
     @State private var firedKeys: Set<UInt16>?
-    /// Height of the bottom glass band (week calendar + sync footer), so the
-    /// action toast floats above it instead of rising through it.
-    @State private var bottomBandHeight: CGFloat = 0
 
     /// All incomplete reminders, chronological (store's sort: due asc, nil last, title).
-    private var allItems: [EKReminder] {
+    private var unfilteredAllItems: [EKReminder] {
         store.allReminders.filter { !$0.isCompleted }
+    }
+
+    /// The incomplete pool the main list actually shows: hidden lists'
+    /// reminders are dropped before bucketing, so they vanish from the list,
+    /// search, and the mini calendar's counts together.
+    private var allItems: [EKReminder] {
+        unfilteredAllItems.filter {
+            !settings.hiddenLists.contains($0.calendar?.calendarIdentifier ?? "")
+        }
     }
 
     /// The active tag filter, lowercased without `#`; nil = no filter.
@@ -124,10 +132,13 @@ struct MainView: View {
 
     /// Completed reminders matching the search (tag filter applied). Search is
     /// the only path that surfaces completed items in the main list — Recovery
-    /// remains the browsing surface.
+    /// remains the browsing surface. Hidden lists stay hidden here too.
     private var searchCompletedItems: [EKReminder] {
         guard searchQuery != nil else { return [] }
-        return filtered(searchMatches(store.completedReminders))
+        let pool = store.completedReminders.filter {
+            !settings.hiddenLists.contains($0.calendar?.calendarIdentifier ?? "")
+        }
+        return filtered(searchMatches(pool))
     }
 
     /// Every incomplete reminder bucketed into the pinned ongoing section or
@@ -147,6 +158,23 @@ struct MainView: View {
             let items = filtered(grouped[section] ?? [])
             return items.isEmpty ? nil : (section, items)
         }
+    }
+
+    /// Incomplete-reminder count per list in the current (tag-filtered) pool,
+    /// in calendar order — the list picker's data, independent of visibility
+    /// so a hidden list still shows what it holds.
+    private var listCounts: [(EKCalendar, Int)] {
+        let pool = filtered(unfilteredAllItems)
+        return store.reminderCalendars().map { calendar in
+            let count = pool.filter { $0.calendar?.calendarIdentifier == calendar.calendarIdentifier }.count
+            return (calendar, count)
+        }
+    }
+
+    /// True when incomplete reminders exist but every one belongs to a hidden
+    /// list — the empty state says so instead of "All caught up".
+    private var hiddenListsHideEverything: Bool {
+        !unfilteredAllItems.isEmpty && allItems.isEmpty
     }
 
     private var isSearching: Bool {
@@ -180,6 +208,7 @@ struct MainView: View {
     private var emptyStateText: String {
         if isSearching { return "No reminders match" }
         if let activeFilter { return "No reminders with #\(activeFilter)" }
+        if hiddenListsHideEverything { return "All lists hidden" }
         return "All caught up"
     }
 
@@ -448,6 +477,27 @@ struct MainView: View {
                     .environmentObject(store)
             }
 
+            Button {
+                showListPicker.toggle()
+            } label: {
+                Image(systemName: "rectangle.3.group")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Show or hide reminder lists")
+            .background {
+                FastPopoverPresenter(
+                    isPresented: showListPicker,
+                    content: AnyView(
+                        ListPickerView(counts: listCounts,
+                                       onClose: { showListPicker = false })
+                            .environmentObject(settings)
+                    ),
+                    onDismiss: { showListPicker = false }
+                )
+            }
+
             if let activeFilter {
                 HStack(spacing: 4) {
                     Text("#\(activeFilter)")
@@ -544,7 +594,7 @@ struct MainView: View {
         .padding(.bottom, 10)
         .padding(.horizontal, 12)
         .liquidGlassToolbarSurface()
-        .zIndex((showTagFilter || showRecovery) ? 10 : 0)
+        .zIndex((showTagFilter || showRecovery || showListPicker) ? 10 : 0)
     }
 
     /// The current week's calendar pinned under the list (opt-in setting):
@@ -561,16 +611,20 @@ struct MainView: View {
             .padding(.vertical, 6)
     }
 
-    /// Incomplete (red) and completed (gray) reminder counts per startOfDay.
+    /// Incomplete (red) and completed (gray) reminder counts per startOfDay,
+    /// excluding hidden lists so the strip matches the list above it.
     private var dayCounts: (active: [Date: Int], completed: [Date: Int]) {
         let calendar = Calendar.current
         var active: [Date: Int] = [:]
-        for reminder in store.allReminders where !reminder.isCompleted {
+        for reminder in store.allReminders
+        where !reminder.isCompleted
+            && !settings.hiddenLists.contains(reminder.calendar?.calendarIdentifier ?? "") {
             guard let date = reminder.dueDateComponents.flatMap({ calendar.date(from: $0) }) else { continue }
             active[calendar.startOfDay(for: date), default: 0] += 1
         }
         var completed: [Date: Int] = [:]
-        for reminder in store.completedReminders {
+        for reminder in store.completedReminders
+        where !settings.hiddenLists.contains(reminder.calendar?.calendarIdentifier ?? "") {
             guard let date = reminder.dueDateComponents.flatMap({ calendar.date(from: $0) }) else { continue }
             completed[calendar.startOfDay(for: date), default: 0] += 1
         }
@@ -616,47 +670,29 @@ struct MainView: View {
     }
 
     private var listArea: some View {
-        ZStack(alignment: .bottom) {
-            ScrollView {
-                ScrollViewReader { proxy in
-                    LazyVStack(spacing: 0) {
-                        if filteredItems.isEmpty && searchCompletedItems.isEmpty {
-                            VStack(spacing: 6) {
-                                Image(systemName: "checkmark.circle")
-                                    .font(.system(size: 28))
-                                    .foregroundStyle(.tertiary)
-                                Text(emptyStateText)
-                                    .font(.callout)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding(.top, 48)
-                        } else if isSearching {
-                            ForEach(filteredItems, id: \.calendarItemIdentifier) { reminder in
-                                ReminderRowView(reminder: reminder,
-                                                isSelected: selection == .reminder(reminder.calendarItemIdentifier),
-                                                onSelect: { selectRow(.reminder(reminder.calendarItemIdentifier)) },
-                                                onOpen: { viewingReminder = reminder },
-                                                onToggleCompletion: performToggleCompletion,
-                                                onDelete: performDelete,
-                                                onEdit: { editingReminder = $0 },
-                                                onSnooze: beginSnooze,
-                                                onDuplicate: duplicateReminder,
-                                                onMoveToList: moveReminder,
-                                                onCopyTitle: copyReminderTitle)
-                                .transition(removalTransition)
-                                .id(rowID(.reminder(reminder.calendarItemIdentifier)))
-                                Divider()
-                                    .padding(.leading, 12)
-                            }
-                            if !searchCompletedItems.isEmpty {
-                                Text("Completed")
-                                    .font(.caption.bold())
-                                    .foregroundStyle(.secondary)
-                                    .padding(.horizontal, 12)
-                                    .padding(.top, 12)
-                                    .padding(.bottom, 4)
-                                ForEach(searchCompletedItems, id: \.calendarItemIdentifier) { reminder in
+        // The bottom band (week calendar + sync footer) is a sibling below the
+        // scroll view rather than a safeAreaInset: safeAreaInset does not
+        // inset NSScrollView content on macOS, so rows scroll behind the
+        // band's glass. Sibling layout ends the list exactly at the band's
+        // top edge.
+        VStack(spacing: 0) {
+            ZStack(alignment: .bottom) {
+                ScrollView {
+                    ScrollViewReader { proxy in
+                        LazyVStack(spacing: 0) {
+                            if filteredItems.isEmpty && searchCompletedItems.isEmpty {
+                                VStack(spacing: 6) {
+                                    Image(systemName: hiddenListsHideEverything ? "rectangle.3.group" : "checkmark.circle")
+                                        .font(.system(size: 28))
+                                        .foregroundStyle(.tertiary)
+                                    Text(emptyStateText)
+                                        .font(.callout)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.top, 48)
+                            } else if isSearching {
+                                ForEach(filteredItems, id: \.calendarItemIdentifier) { reminder in
                                     ReminderRowView(reminder: reminder,
                                                     isSelected: selection == .reminder(reminder.calendarItemIdentifier),
                                                     onSelect: { selectRow(.reminder(reminder.calendarItemIdentifier)) },
@@ -670,87 +706,101 @@ struct MainView: View {
                                                     onCopyTitle: copyReminderTitle)
                                     .transition(removalTransition)
                                     .id(rowID(.reminder(reminder.calendarItemIdentifier)))
+                                    Divider()
+                                        .padding(.leading, 12)
                                 }
-                                Divider()
-                                    .padding(.leading, 12)
-                            }
-                        } else {
-                            ForEach(sections, id: \.0) { section, items in
-                                Text(section.rawValue)
-                                    .font(.caption.bold())
-                                    .foregroundStyle(.secondary)
-                                    .padding(.horizontal, 12)
-                                    .padding(.top, 12)
-                                    .padding(.bottom, 4)
-                                ForEach(items, id: \.calendarItemIdentifier) { reminder in
-                                    ReminderRowView(reminder: reminder,
-                                                    isSelected: selection == .reminder(reminder.calendarItemIdentifier),
-                                                    onSelect: { selectRow(.reminder(reminder.calendarItemIdentifier)) },
-                                                    onOpen: { viewingReminder = reminder },
-                                                    onToggleCompletion: performToggleCompletion,
-                                                    onDelete: performDelete,
-                                                    onEdit: { editingReminder = $0 },
-                                                    onSnooze: beginSnooze,
-                                                    onDuplicate: duplicateReminder,
-                                                    onMoveToList: moveReminder,
-                                                    onCopyTitle: copyReminderTitle)
-                                    .transition(removalTransition)
-                                    .id(rowID(.reminder(reminder.calendarItemIdentifier)))
+                                if !searchCompletedItems.isEmpty {
+                                    Text("Completed")
+                                        .font(.caption.bold())
+                                        .foregroundStyle(.secondary)
+                                        .padding(.horizontal, 12)
+                                        .padding(.top, 12)
+                                        .padding(.bottom, 4)
+                                    ForEach(searchCompletedItems, id: \.calendarItemIdentifier) { reminder in
+                                        ReminderRowView(reminder: reminder,
+                                                        isSelected: selection == .reminder(reminder.calendarItemIdentifier),
+                                                        onSelect: { selectRow(.reminder(reminder.calendarItemIdentifier)) },
+                                                        onOpen: { viewingReminder = reminder },
+                                                        onToggleCompletion: performToggleCompletion,
+                                                        onDelete: performDelete,
+                                                        onEdit: { editingReminder = $0 },
+                                                        onSnooze: beginSnooze,
+                                                        onDuplicate: duplicateReminder,
+                                                        onMoveToList: moveReminder,
+                                                        onCopyTitle: copyReminderTitle)
+                                        .transition(removalTransition)
+                                        .id(rowID(.reminder(reminder.calendarItemIdentifier)))
+                                    }
+                                    Divider()
+                                        .padding(.leading, 12)
                                 }
-                                Divider()
-                                    .padding(.leading, 12)
+                            } else {
+                                ForEach(sections, id: \.0) { section, items in
+                                    Text(section.rawValue)
+                                        .font(.caption.bold())
+                                        .foregroundStyle(.secondary)
+                                        .padding(.horizontal, 12)
+                                        .padding(.top, 12)
+                                        .padding(.bottom, 4)
+                                    ForEach(items, id: \.calendarItemIdentifier) { reminder in
+                                        ReminderRowView(reminder: reminder,
+                                                        isSelected: selection == .reminder(reminder.calendarItemIdentifier),
+                                                        onSelect: { selectRow(.reminder(reminder.calendarItemIdentifier)) },
+                                                        onOpen: { viewingReminder = reminder },
+                                                        onToggleCompletion: performToggleCompletion,
+                                                        onDelete: performDelete,
+                                                        onEdit: { editingReminder = $0 },
+                                                        onSnooze: beginSnooze,
+                                                        onDuplicate: duplicateReminder,
+                                                        onMoveToList: moveReminder,
+                                                        onCopyTitle: copyReminderTitle)
+                                        .transition(removalTransition)
+                                        .id(rowID(.reminder(reminder.calendarItemIdentifier)))
+                                    }
+                                    Divider()
+                                        .padding(.leading, 12)
+                                }
                             }
                         }
+                        .onAppear { scrollProxy = proxy }
+                        // Completion removes the row from this list; animate that
+                        // removal (fade + shrink via `removalTransition`) whenever
+                        // the completed set changes. Keying on the completed count
+                        // keeps search typing and other list mutations instant.
+                        .animation(.easeInOut(duration: 0.18),
+                                   value: store.completedReminders.count)
                     }
-                    .onAppear { scrollProxy = proxy }
-                    // Completion removes the row from this list; animate that
-                    // removal (fade + shrink via `removalTransition`) whenever
-                    // the completed set changes. Keying on the completed count
-                    // keeps search typing and other list mutations instant.
-                    .animation(.easeInOut(duration: 0.18),
-                               value: store.completedReminders.count)
+                }
+                .scrollIndicators(.hidden)
+                // Clicking empty list space (below the rows, on a section
+                // header, between items) clears the selection; rows and their
+                // buttons consume their own taps.
+                .onTapGesture { selection = nil }
+                if let toast = actionToast {
+                    ActionToast(message: toast.message,
+                                actionTitle: toast.actionTitle,
+                                action: toast.action,
+                                contentOffset: toastContentOffset,
+                                contentOpacity: toastContentOpacity)
+                        // Pure state-driven motion (no transitions): always a
+                        // clean vertical rise and fade, straight up from
+                        // below. Sits above the bottom band (a sibling below
+                        // this stack), so it never rises through the week
+                        // calendar.
+                        .offset(y: toastPresented ? 0 : 36)
+                        .opacity(toastPresented ? 1 : 0)
+                        .padding(.bottom, 12)
                 }
             }
-            .scrollIndicators(.hidden)
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                // Two distinct glass surfaces: the week calendar's full-width
-                // band, a hairline divider, then the sync footer's own band.
-                VStack(spacing: 0) {
-                    if settings.showBottomCalendar {
-                        // The calendar's upper border, then the strip, then
-                        // the footer's border.
-                        Divider().opacity(0.45)
-                        bottomCalendarContent
-                        Divider().opacity(0.45)
-                    }
-                    syncFooter
-                }
-                .background(
-                    GeometryReader { geo in
-                        Color.clear.preference(key: BottomBandHeightKey.self,
-                                               value: geo.size.height)
-                    }
-                )
-                .onPreferenceChange(BottomBandHeightKey.self) { bottomBandHeight = $0 }
+
+            // The calendar's upper border, then the strip, then the footer's
+            // border.
+            if settings.showBottomCalendar {
+                Divider().opacity(0.45)
+                bottomCalendarContent
+                Divider().opacity(0.45)
             }
-            // Clicking empty list space (below the rows, on a section header,
-            // between items) clears the selection; rows and their buttons
-            // consume their own taps.
-            .onTapGesture { selection = nil }
-            if let toast = actionToast {
-                ActionToast(message: toast.message,
-                            actionTitle: toast.actionTitle,
-                            action: toast.action,
-                            contentOffset: toastContentOffset,
-                            contentOpacity: toastContentOpacity)
-                    // Pure state-driven motion (no transitions): always a
-                    // clean vertical rise and fade, straight up from below.
-                    // Sits above the bottom glass band so it never rises
-                    // through the week calendar.
-                    .offset(y: toastPresented ? 0 : 36)
-                    .opacity(toastPresented ? 1 : 0)
-                    .padding(.bottom, bottomBandHeight + 12)
-            }
+            syncFooter
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .popover(isPresented: Binding(get: { snoozingReminder != nil },
@@ -1155,14 +1205,6 @@ struct MainView: View {
 /// MainView reserves this space in the fixed list layer so the composer can
 /// expand over the list instead of pushing it down.
 private struct TopBlockHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
-
-/// Height of the bottom glass band (week calendar + sync footer).
-private struct BottomBandHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())

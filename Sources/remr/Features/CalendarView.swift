@@ -7,6 +7,14 @@ enum CalendarMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+/// One today-to-due bar: the inclusive day range whose month/week cells
+/// each render a segment, so consecutive cells read as a single bar.
+private struct TimelineBar {
+    let reminder: EKReminder
+    let startDay: Date
+    let endDay: Date
+}
+
 /// Snooze/clear callbacks handed to day surfaces for chip context menus.
 struct CalendarActions {
     let onSnooze: (EKReminder, SnoozeChoice) -> Void
@@ -38,6 +46,7 @@ private struct CellFramePreference: PreferenceKey {
 /// snoozes, and "Show completed" reveals completed reminders struck through.
 struct CalendarView: View {
     @EnvironmentObject private var store: ReminderStore
+    @EnvironmentObject private var settings: SettingsStore
     let onCancel: () -> Void
     /// Double-clicking a reminder hands it to the main popover's detail page.
     var onOpenDetail: (EKReminder) -> Void = { _ in }
@@ -49,6 +58,8 @@ struct CalendarView: View {
     @State private var selectedDay: Date = Date()
     /// Include completed reminders (struck through) on their due days.
     @State private var showCompleted = false
+    /// Overlay today-to-due bars on the month and week grids.
+    @State private var showTimeline = false
     @State private var showHelp = false
     @State private var snoozingReminder: EKReminder?
     @State private var snoozeShowingPicker = false
@@ -64,6 +75,8 @@ struct CalendarView: View {
                     MonthGrid(calendar: calendar,
                               month: CalendarGridMath.startOfMonth(for: anchor, calendar: calendar),
                               buckets: buckets,
+                              timelineBars: timelineBars,
+                              showTimeline: showTimeline,
                               actions: actions,
                               onSelectDay: selectDay,
                               onDrop: dropReminder,
@@ -72,6 +85,8 @@ struct CalendarView: View {
                     WeekGrid(calendar: calendar,
                              weekStart: CalendarGridMath.startOfWeek(for: anchor, calendar: calendar),
                              buckets: buckets,
+                             timelineBars: timelineBars,
+                             showTimeline: showTimeline,
                              actions: actions,
                              onSelectDay: selectDay,
                              onDrop: dropReminder,
@@ -104,14 +119,28 @@ struct CalendarView: View {
     }
 
     /// Incomplete reminders only by default; "Show completed" adds completed.
+    /// Hidden lists stay hidden here too, matching the main list, search,
+    /// and mini calendar counts.
     private var items: [EKReminder] {
         CalendarBuckets.visibleItems(all: store.allReminders,
                                      completed: store.completedReminders,
                                      showCompleted: showCompleted)
+            .filter { !settings.hiddenLists.contains($0.calendar?.calendarIdentifier ?? "") }
     }
 
     private var buckets: [Date: [EKReminder]] {
         CalendarBuckets.byDay(items, calendar: calendar)
+    }
+
+    /// Inclusive today-to-due ranges for dated reminders, backing the
+    /// timeline segments in the month and week grids.
+    private var timelineBars: [TimelineBar] {
+        let today = calendar.startOfDay(for: Date())
+        return timelineBarsSorted(items.compactMap { reminder in
+            guard let due = reminder.dueDateComponents.flatMap({ calendar.date(from: $0) }) else { return nil }
+            let day = calendar.startOfDay(for: due)
+            return TimelineBar(reminder: reminder, startDay: min(today, day), endDay: max(today, day))
+        })
     }
 
     private var actions: CalendarActions {
@@ -223,6 +252,11 @@ struct CalendarView: View {
                 .controlSize(.small)
                 .font(.caption)
                 .help("Include completed reminders (struck through) on their due days")
+            Toggle("Show Gantt bars", isOn: $showTimeline)
+                .toggleStyle(.checkbox)
+                .controlSize(.small)
+                .font(.caption)
+                .help("Show Gantt bars from today to each due date across the month and week grids")
             Spacer()
             if let panelError {
                 Text(panelError)
@@ -330,6 +364,19 @@ private func chipColor(for reminder: EKReminder) -> Color {
     return firstTag.flatMap { TagStore.shared.color(for: $0) } ?? Color.accentColor
 }
 
+/// Timeline bars are globally ordered once, so every day renders a bar
+/// in the same lane. This makes a multi-day reminder a real continuous
+/// chart instead of a stack that jumps between cells.
+private func timelineBarsSorted(_ bars: [TimelineBar]) -> [TimelineBar] {
+    bars.sorted {
+        if $0.startDay != $1.startDay { return $0.startDay < $1.startDay }
+        if $0.endDay != $1.endDay { return $0.endDay < $1.endDay }
+        return ($0.reminder.title ?? "") < ($1.reminder.title ?? "")
+    }
+}
+
+/// The calendar renders a bar segment in every covered cell. Global ordering
+/// keeps each segment on the same lane across consecutive days.
 /// Compact week strip: the seven days of `date`'s week. The `date` day fills
 /// accent, today gets an accent outline plus a "TODAY" label, and days in
 /// `reminderDays` show a dot. Shared by the detail page and the popover's
@@ -465,6 +512,8 @@ private struct MonthGrid: View {
     let calendar: Calendar
     let month: Date
     let buckets: [Date: [EKReminder]]
+    let timelineBars: [TimelineBar]
+    let showTimeline: Bool
     let actions: CalendarActions
     let onSelectDay: (Date) -> Void
     let onDrop: ([String], Date) -> Bool
@@ -496,7 +545,7 @@ private struct MonthGrid: View {
             }
             ZStack(alignment: .topLeading) {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 7),
-                          spacing: 4) {
+                          spacing: showTimeline ? 0 : 4) {
                     ForEach(0..<(leadingBlanks + daysInMonth), id: \.self) { index in
                         if index < leadingBlanks {
                             Color.clear
@@ -558,6 +607,36 @@ private struct MonthGrid: View {
         }
     }
 
+    /// Chips for the day, or full-bleed timeline segments when the overlay
+    /// is on (extracted so the cell body stays type-checkable).
+    @ViewBuilder
+    private func dayItems(date: Date, items: [EKReminder]) -> some View {
+        if showTimeline {
+            // Render every lane, including an empty placeholder. Without the
+            // placeholders a reminder changes vertical position between days.
+            ForEach(timelineBars, id: \.reminder.calendarItemIdentifier) { bar in
+                if bar.startDay <= date && date <= bar.endDay {
+                    ReminderChip(reminder: bar.reminder,
+                                 color: chipColor(for: bar.reminder),
+                                 actions: actions,
+                                 onDragChanged: dragChanged,
+                                 onDragEnded: dragEnded,
+                                 onOpenDetail: onOpenDetail,
+                                 showTitle: bar.startDay == date,
+                                 spanEdge: (start: bar.startDay == date, end: bar.endDay == date))
+                } else {
+                    Color.clear.frame(height: 18)
+                }
+            }
+        } else {
+            ForEach(items.prefix(3), id: \.calendarItemIdentifier) { reminder in
+                ReminderChip(reminder: reminder, color: chipColor(for: reminder), actions: actions,
+                             onDragChanged: dragChanged, onDragEnded: dragEnded, onOpenDetail: onOpenDetail)
+            }
+            if items.count > 3 { Text("+\(items.count - 3) more").font(.caption2).foregroundStyle(.secondary) }
+        }
+    }
+
     private func dayCell(_ day: Int) -> some View {
         let date = calendar.date(byAdding: .day, value: day - 1, to: month)!
         let items = buckets[date] ?? []
@@ -568,19 +647,7 @@ private struct MonthGrid: View {
                 .font(.caption2)
                 .fontWeight(isToday ? .semibold : .regular)
                 .foregroundStyle(isToday ? Color.accentColor : Color.primary)
-            ForEach(items.prefix(3), id: \.calendarItemIdentifier) { reminder in
-                ReminderChip(reminder: reminder,
-                             color: chipColor(for: reminder),
-                             actions: actions,
-                             onDragChanged: dragChanged,
-                             onDragEnded: dragEnded,
-                             onOpenDetail: onOpenDetail)
-            }
-            if items.count > 3 {
-                Text("+\(items.count - 3) more")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
+            dayItems(date: date, items: items)
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, minHeight: 56, alignment: .topLeading)
@@ -609,6 +676,8 @@ private struct WeekGrid: View {
     let calendar: Calendar
     let weekStart: Date
     let buckets: [Date: [EKReminder]]
+    let timelineBars: [TimelineBar]
+    let showTimeline: Bool
     let actions: CalendarActions
     let onSelectDay: (Date) -> Void
     let onDrop: ([String], Date) -> Bool
@@ -630,7 +699,7 @@ private struct WeekGrid: View {
             }
             ZStack(alignment: .topLeading) {
                 ScrollView(.vertical) {
-                    HStack(spacing: 4) {
+                    HStack(spacing: showTimeline ? 0 : 4) {
                         ForEach(0..<7, id: \.self) { i in
                             dayColumn(i)
                         }
@@ -688,6 +757,34 @@ private struct WeekGrid: View {
         }
     }
 
+    /// Chips for the column, or full-bleed timeline segments when the
+    /// overlay is on (extracted so the column body stays type-checkable).
+    @ViewBuilder
+    private func columnItems(date: Date, items: [EKReminder]) -> some View {
+        if showTimeline {
+            ForEach(timelineBars, id: \.reminder.calendarItemIdentifier) { bar in
+                if bar.startDay <= date && date <= bar.endDay {
+                    ReminderChip(reminder: bar.reminder,
+                                 color: chipColor(for: bar.reminder),
+                                 actions: actions,
+                                 onDragChanged: dragChanged,
+                                 onDragEnded: dragEnded,
+                                 onOpenDetail: onOpenDetail,
+                                 showTitle: bar.startDay == date,
+                                 spanEdge: (start: bar.startDay == date, end: bar.endDay == date))
+                } else {
+                    Color.clear.frame(height: 18)
+                }
+            }
+        } else {
+            ForEach(items.prefix(5), id: \.calendarItemIdentifier) { reminder in
+                ReminderChip(reminder: reminder, color: chipColor(for: reminder), actions: actions,
+                             onDragChanged: dragChanged, onDragEnded: dragEnded, onOpenDetail: onOpenDetail)
+            }
+            if items.count > 5 { Text("+\(items.count - 5) more").font(.caption2).foregroundStyle(.secondary) }
+        }
+    }
+
     private func dayColumn(_ i: Int) -> some View {
         let date = calendar.date(byAdding: .day, value: i, to: weekStart)!
         let items = buckets[date] ?? []
@@ -698,19 +795,7 @@ private struct WeekGrid: View {
             Text("\(symbol) \(calendar.component(.day, from: date))")
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(isToday ? Color.accentColor : Color.primary)
-            ForEach(items.prefix(5), id: \.calendarItemIdentifier) { reminder in
-                ReminderChip(reminder: reminder,
-                             color: chipColor(for: reminder),
-                             actions: actions,
-                             onDragChanged: dragChanged,
-                             onDragEnded: dragEnded,
-                             onOpenDetail: onOpenDetail)
-            }
-            if items.count > 5 {
-                Text("+\(items.count - 5) more")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
+            columnItems(date: date, items: items)
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, minHeight: 120, alignment: .topLeading)
@@ -826,17 +911,25 @@ private struct ReminderChip: View {
     let onDragChanged: (String, CGPoint) -> Void
     let onDragEnded: (String, CGPoint) -> Void
     let onOpenDetail: (EKReminder) -> Void
+    var showTitle: Bool = true
+    /// Timeline segment edges: when set, the chip renders full-bleed with
+    /// square sides where the span continues into the adjacent cell, so
+    /// consecutive cells read as one bar. Nil renders the classic chip.
+    /// (`var` so the memberwise init keeps it as a defaulted parameter.)
+    var spanEdge: (start: Bool, end: Bool)? = nil
 
     private var chipContent: some View {
         HStack(spacing: 4) {
             Circle()
                 .fill(color)
                 .frame(width: 5, height: 5)
-            Text(reminder.title ?? "")
-                .font(.caption2)
-                .strikethrough(reminder.isCompleted)
-                .foregroundStyle(reminder.isCompleted ? Color.secondary : Color.primary)
-                .lineLimit(1)
+            if showTitle {
+                Text(reminder.title ?? "")
+                    .font(.caption2)
+                    .strikethrough(reminder.isCompleted)
+                    .foregroundStyle(reminder.isCompleted ? Color.secondary : Color.primary)
+                    .lineLimit(1)
+            }
         }
     }
 
@@ -845,6 +938,22 @@ private struct ReminderChip: View {
             chipContent
         } else {
             chipContent
+                .frame(maxWidth: spanEdge == nil ? nil : .infinity,
+                       minHeight: spanEdge == nil ? nil : 18,
+                       alignment: .leading)
+                .padding(.horizontal, spanEdge == nil ? 0 : -4)
+                .zIndex(spanEdge == nil ? 0 : 1)
+                .background {
+                    if let spanEdge {
+                        UnevenRoundedRectangle(
+                            topLeadingRadius: spanEdge.start ? 6 : 0,
+                            bottomLeadingRadius: spanEdge.start ? 6 : 0,
+                            bottomTrailingRadius: spanEdge.end ? 6 : 0,
+                            topTrailingRadius: spanEdge.end ? 6 : 0,
+                            style: .continuous)
+                            .fill(color.opacity(0.22))
+                    }
+                }
                 .background(GeometryReader { geo in
                     Color.clear.preference(key: ChipFramePreference.self,
                                            value: [reminder.calendarItemIdentifier: geo.frame(in: .named(calendarGridSpace))])
@@ -895,6 +1004,7 @@ private struct CalendarHelpView: View {
             helpRow("Right-click a reminder to snooze or clear its due date")
             helpRow("Red dot = overdue · coloured dot = the reminder's tag")
             helpRow("“Show completed” adds finished reminders, struck through")
+            helpRow("Show Gantt bars stretch from today to each due date (red = overdue)")
             helpRow("Esc closes · ⌥⌘C opens from anywhere")
         }
         .padding(12)

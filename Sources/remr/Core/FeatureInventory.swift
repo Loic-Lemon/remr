@@ -147,7 +147,7 @@ enum FeatureInventory {
             status: .idea),
         FeatureInventoryItem(
             name: "Calendar planning view",
-            summary: "Visualizes reminders on month, week, and day views with snooze, drag-to-reschedule, a completed toggle, and a double-click detail page with map."),
+            summary: "Visualizes reminders on month, week, and day views with snooze, drag-to-reschedule, lane-aligned Gantt bars from today to each due date, a completed toggle, and a double-click detail page with map."),
         FeatureInventoryItem(
             name: "Recurring reminder editor",
             summary: "Idea: create and edit recurrence rules directly instead of only displaying recurrence summaries.",
