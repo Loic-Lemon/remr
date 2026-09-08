@@ -155,6 +155,7 @@ struct BulkReminderPreview: View {
     @State private var loadedText: String?
     @State private var listNames: [String] = []
     @State private var isProcessing = false
+    @State private var loadError: String?
 
     init(text: String, onCancel: @escaping () -> Void, onDone: @escaping () -> Void) {
         self.text = text
@@ -164,6 +165,7 @@ struct BulkReminderPreview: View {
         _loadedText = State(initialValue: nil)
         _listNames = State(initialValue: [])
         _isProcessing = State(initialValue: false)
+        _loadError = State(initialValue: nil)
     }
 
     var body: some View {
@@ -191,7 +193,27 @@ struct BulkReminderPreview: View {
 
             Divider()
 
-            if rows.isEmpty {
+            if isProcessing && rows.isEmpty {
+                ProgressView("Interpreting reminders…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let loadError {
+                VStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.title2)
+                        .foregroundStyle(.orange)
+                    Text(loadError)
+                        .font(.headline)
+                        .multilineTextAlignment(.center)
+                    Button("Retry") {
+                        self.loadError = nil
+                        loadedText = nil
+                        loadRowsIfNeeded()
+                    }
+                    .liquidGlassButtonStyle(.borderedProminent, prominent: true)
+                }
+                .padding(20)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if rows.isEmpty {
                 VStack(spacing: 8) {
                     Image(systemName: "checklist")
                         .font(.title2)
@@ -243,38 +265,36 @@ struct BulkReminderPreview: View {
         loadedText = text
         let names = store.reminderCalendars().map(\.title)
         listNames = names
-        let now = Date()
-        let parsed = NaturalLanguageParser.parseBulk(text, now: now, calendar: .current, listNames: names)
-        rows = parsed.map { parsedReminder in
-            let resolved: (calendar: EKCalendar?, matchedTitle: String?)
-            if parsedReminder.listMatched {
-                resolved = store.resolveList(token: parsedReminder.listToken ?? "")
-            } else {
-                resolved = (nil, nil)
+        loadError = nil
+        isProcessing = true
+        Task { @MainActor in
+            do {
+                let modelRows = try await OllamaReminderParser().parseBulk(text)
+                let now = Date()
+                rows = modelRows.map { item, result in
+                    let input = [result.title, result.deadlineText].compactMap { $0 }.joined(separator: " ")
+                    var parsed = NaturalLanguageParser.parse(input, now: now, calendar: .current, listNames: names)
+                    parsed.original = item.text
+                    parsed.tags = item.tags
+                    let resolved = parsed.listMatched
+                        ? store.resolveList(token: parsed.listToken ?? "")
+                        : (calendar: nil, matchedTitle: nil)
+                    let parsedDraft = ReminderDraft.fromParsed(parsed,
+                                                               notes: result.description,
+                                                               calendar: resolved.calendar)
+                    return BulkReminderRow(id: UUID(),
+                                           draft: parsedDraft,
+                                           selected: !parsed.isInvalid,
+                                           state: .ready,
+                                           notice: nil)
+                }
+                isProcessing = false
+            } catch {
+                rows = []
+                loadError = error.localizedDescription
+                loadedText = nil
+                isProcessing = false
             }
-            // Keep this mapping through the shared draft codec so bulk and
-            // single-entry creation have identical parser semantics.
-            let parsedDraft = ReminderDraft.fromParsed(parsedReminder, notes: "", calendar: resolved.calendar)
-            let id = UUID()
-            let draft = ReminderDraft(
-                id: id,
-                rawInput: parsedDraft.rawInput,
-                title: parsedDraft.title,
-                notes: parsedDraft.notes,
-                dueDate: parsedDraft.dueDate,
-                hasTime: parsedDraft.hasTime,
-                priority: parsedDraft.priority,
-                calendarIdentifier: parsedDraft.calendarIdentifier,
-                calendarTitle: parsedDraft.calendarTitle,
-                location: parsedDraft.location,
-                tags: parsedDraft.tags,
-                diagnostics: parsedDraft.diagnostics
-            )
-            return BulkReminderRow(id: id,
-                                   draft: draft,
-                                   selected: !parsedReminder.isInvalid,
-                                   state: .ready,
-                                   notice: nil)
         }
     }
 
