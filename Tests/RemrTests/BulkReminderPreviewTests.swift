@@ -17,6 +17,21 @@ final class BulkReminderPreviewTests: XCTestCase {
         XCTAssertEqual(rows.map(\.state), [.ready, .ready, .ready])
     }
 
+    func testMarkdownBulkParserUsesNestedHeadingsAsSlugTags() {
+        let items = BulkMarkdownParser.items(from: "# bobs burgers\n## market research\n\n1. Research the recipe\n\n# other\n- Another task")
+
+        XCTAssertEqual(items.map(\.text), ["Research the recipe", "Another task"])
+        XCTAssertEqual(items.map(\.tags), [["bobs-burgers", "market-research"], ["other"]])
+    }
+
+    func testMarkdownBulkParserCombinesContinuationLines() {
+        let items = BulkMarkdownParser.items(from: "## research\n- Question?\n  Action: investigate it\n  Due tomorrow")
+
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items[0].text, "Question?\nAction: investigate it\nDue tomorrow")
+        XCTAssertEqual(items[0].tags, ["research"])
+    }
+
     func testSelectionDefaultsKeepEmptyTitleOffAndUnknownListOn() {
         let parsed = NaturalLanguageParser.parseBulk("tomorrow\n@unknown list task\nordinary", now: fixedDate,
                                                        listNames: ["Home"])

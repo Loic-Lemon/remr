@@ -19,6 +19,7 @@ struct MainView: View {
     @State private var showRecovery = false
     @State private var showSettings = false
     @State private var bulkInput: String?
+    @State private var showBulkInput = false
     @State private var editingReminder: EKReminder?
     /// Read-only detail page (double-click target); Edit hands off to the editor.
     @State private var viewingReminder: EKReminder?
@@ -267,6 +268,13 @@ struct MainView: View {
                                      self.editingReminder = nil
                                      showActionToast(message: "Saved reminder", duration: 2.5)
                                  })
+            } else if showBulkInput {
+                BulkReminderInputView(
+                    onCancel: { showBulkInput = false },
+                    onParse: { input in
+                        showBulkInput = false
+                        bulkInput = input
+                    })
             } else if let bulkInput {
                 BulkReminderPreview(text: bulkInput,
                                      onCancel: { self.bulkInput = nil },
@@ -518,6 +526,16 @@ struct MainView: View {
                 .liquidGlassCapsule(tint: filterColor)
                 .help("Filtered by #\(activeFilter)")
             }
+            Button {
+                showBulkInput = true
+            } label: {
+                Image(systemName: "square.and.pencil")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Bulk import reminders")
+
             Button {
                 showRecovery.toggle()
             } label: {
