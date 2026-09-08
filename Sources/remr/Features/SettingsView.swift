@@ -144,6 +144,26 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Toggle("Enable local model features", isOn: Binding(
+                            get: { settings.ollamaEnabled },
+                            set: { settings.setOllamaEnabled($0) }
+                        ))
+                        .toggleStyle(.switch)
+                        .accessibilityLabel("Enable local model features")
+                        Text("Uses Ollama and qwen2.5:3b on this Mac to interpret Markdown bulk imports. Install the model before enabling this option.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    .padding(.bottom, 16)
+                } header: {
+                    settingsSubheading("Local Model")
+                }
+
+                Section {
                     VStack(alignment: .leading, spacing: 18) {
                         ForEach(BindableAction.allCases) { action in
                             bindingRow(for: action)

@@ -562,7 +562,7 @@ struct NewReminderView: View {
     /// still holding the submitted text).
     private func submit() {
         guard !saving else { return }
-        if title.contains("\n") {
+        if title.contains("\n"), settings.ollamaEnabled {
             onBulkPreview?(title)
             return
         }

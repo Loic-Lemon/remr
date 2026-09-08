@@ -534,7 +534,8 @@ struct MainView: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
-            .help("Bulk import reminders")
+            .disabled(!settings.ollamaEnabled)
+            .help(settings.ollamaEnabled ? "Bulk import reminders" : "Enable local model features in Settings")
 
             Button {
                 showRecovery.toggle()

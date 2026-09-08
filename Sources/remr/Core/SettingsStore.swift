@@ -169,6 +169,8 @@ final class SettingsStore: ObservableObject {
     /// Reminder lists (categories) hidden from the main list, keyed by
     /// calendar identifier (empty = all visible).
     @Published private(set) var hiddenLists: Set<String>
+    /// Enables local Ollama parsing for Markdown bulk imports.
+    @Published private(set) var ollamaEnabled: Bool
 
     /// Shown under the Keyboard section; set by assign() or by AppDelegate on
     /// hotkey registration failure.
@@ -195,6 +197,7 @@ final class SettingsStore: ObservableObject {
     /// Persisted as calendar identifiers. Identifiers of lists deleted in
     /// Reminders simply match nothing, so stale entries are harmless.
     private let hiddenListsKey = "remr.hiddenLists"
+    private let ollamaEnabledKey = "remr.ollamaEnabled"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -208,6 +211,7 @@ final class SettingsStore: ObservableObject {
                                           legacyKey: menuBarIconColorKey) ?? .accentColor
         showBottomCalendar = defaults.object(forKey: showBottomCalendarKey) as? Bool ?? true
         hiddenLists = Set(defaults.stringArray(forKey: hiddenListsKey) ?? [])
+        ollamaEnabled = defaults.object(forKey: ollamaEnabledKey) as? Bool ?? false
         errorMessage = nil
     }
 
@@ -247,6 +251,12 @@ final class SettingsStore: ObservableObject {
         guard showBottomCalendar != enabled else { return }
         showBottomCalendar = enabled
         defaults.set(enabled, forKey: showBottomCalendarKey)
+    }
+
+    func setOllamaEnabled(_ enabled: Bool) {
+        guard ollamaEnabled != enabled else { return }
+        ollamaEnabled = enabled
+        defaults.set(enabled, forKey: ollamaEnabledKey)
     }
 
     /// Toggle one reminder list's visibility in the main list; persisted as

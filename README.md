@@ -8,11 +8,12 @@ A keyboard-first Reminders companion for your macOS menu bar.
 Type plain English — `pick up dry cleaning tomorrow at 5pm @errands` — and remr turns it into a real reminder, synced both ways with the Reminders app.
 
 > [!TIP]
+>
 > ## ✨ Bulk Markdown → Reminders
 >
 > Paste a whole Markdown plan into remr. Headings become tags, and local Qwen interprets each item into a clean title, description, and deadline. Review everything before creation.
 
-https://github.com/user-attachments/assets/09ed40d6-ada5-4551-8618-8e6bea71c3eb
+<https://github.com/user-attachments/assets/09ed40d6-ada5-4551-8618-8e6bea71c3eb>
 
 ## Features
 
@@ -27,25 +28,9 @@ https://github.com/user-attachments/assets/09ed40d6-ada5-4551-8618-8e6bea71c3eb
 - **Archive** — restore completed or deleted reminders
 - **Appearance & icon** — Light/Dark/System, plus a customizable menu bar symbol (the fuller checklist glyph is the default), color, and overdue/due-today badge
 
-## Install
+## Install remr
 
-### 1. Install Ollama
-
-Install Ollama from [ollama.com](https://ollama.com/download/mac), or use Homebrew:
-
-```bash
-brew install ollama
-```
-
-Download the local model once:
-
-```bash
-ollama pull qwen2.5:3b
-```
-
-Remr starts Ollama when it needs to parse a bulk import. It stops only the Ollama process that it started. If Ollama was already running, remr leaves it running.
-
-### 2. Build and install remr
+Install the standard reminder features. This setup does not require Ollama.
 
 ```bash
 git clone https://github.com/Loic-Lemon/remr.git
@@ -57,7 +42,20 @@ The installer builds the app, copies it to `/Applications/remr.app`, and launche
 
 > Use the `.app`. The bare binary cannot access your reminders.
 
-### 3. Import Markdown reminders
+## Optional: Local model features
+
+Enable **Settings → Local Model → Enable local model features** to use Bulk Markdown import.
+
+Install Ollama from [ollama.com](https://ollama.com/download/mac), or use Homebrew:
+
+```bash
+brew install ollama
+ollama pull qwen2.5:3b
+```
+
+Remr starts Ollama when it needs to parse a bulk import. It stops only the Ollama process that it started. If Ollama was already running, remr leaves it running.
+
+## Bulk Markdown import
 
 1. Click the bulk-import button in the remr toolbar.
 2. Paste Markdown with headings and list items.
@@ -78,4 +76,4 @@ Headings become tags such as `#bobs-burgers` and `#patties`. Qwen cleans the tit
 
 ## Requirements
 
-macOS 13 or later · Xcode or Command Line Tools · Ollama for bulk import · no third-party Swift dependencies
+macOS 13 or later · Xcode or Command Line Tools · no third-party Swift dependencies
