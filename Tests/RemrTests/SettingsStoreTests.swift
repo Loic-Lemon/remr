@@ -109,6 +109,36 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(SettingsStore(defaults: monochromeDefaults).menuBarIconStyle, .accent)
     }
 
+    func testCompactItemsDefaultsToDisabled() {
+        let store = SettingsStore(defaults: makeDefaults())
+
+        XCTAssertFalse(store.compactItems)
+    }
+
+    func testCompactItemsPersistsAcrossInstances() {
+        let defaults = makeDefaults()
+        let store = SettingsStore(defaults: defaults)
+
+        store.setCompactItems(true)
+
+        XCTAssertTrue(SettingsStore(defaults: defaults).compactItems)
+    }
+
+    func testPomodoroDefaultsToDisabled() {
+        let store = SettingsStore(defaults: makeDefaults())
+
+        XCTAssertFalse(store.pomodoroEnabled)
+    }
+
+    func testPomodoroEnabledPersistsAcrossInstances() {
+        let defaults = makeDefaults()
+        let store = SettingsStore(defaults: defaults)
+
+        store.setPomodoroEnabled(true)
+
+        XCTAssertTrue(SettingsStore(defaults: defaults).pomodoroEnabled)
+    }
+
     func testHiddenListsDefaultToAllVisible() {
         let store = SettingsStore(defaults: makeDefaults())
         XCTAssertTrue(store.hiddenLists.isEmpty)

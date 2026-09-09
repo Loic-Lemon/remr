@@ -10,6 +10,8 @@ struct ReminderRowView: View {
     let reminder: EKReminder
     /// Keyboard/mouse-selection highlight (accent fill, same as the suggestion dropdown).
     var isSelected: Bool = false
+    /// Dims row content while the Pomodoro panel has focus.
+    var isDimmed: Bool = false
     /// Called when the row is single-clicked while unselected (selects it).
     var onSelect: (() -> Void)? = nil
     /// Called when the row is double-clicked (opens it in Reminders.app).
@@ -26,6 +28,7 @@ struct ReminderRowView: View {
     var onDuplicate: ((EKReminder) -> Void)? = nil
     var onMoveToList: ((EKReminder, String?) -> Void)? = nil
     var onCopyTitle: ((EKReminder) -> Void)? = nil
+    var isCompact: Bool = false
     @State private var isHovered = false
     /// True while the completion tick is playing; gates re-entry and drives
     /// the circle fill/checkmark animation before the store mutation.
@@ -136,17 +139,31 @@ struct ReminderRowView: View {
             }
             .buttonStyle(.plain)
             .help(reminder.isCompleted ? "Mark as not completed" : "Mark as completed")
-            VStack(alignment: .leading, spacing: 2) {
-                Text(reminder.title)
-                    .font(.system(size: 13, weight: .medium))
-                    .strikethrough(reminder.isCompleted)
-                    .foregroundStyle(reminder.isCompleted ? Color.secondary : Color.primary)
-                metaLine
+            VStack(alignment: .leading, spacing: isCompact ? 1 : 2) {
+                if isCompact {
+                    HStack(spacing: 8) {
+                        Text(reminder.title)
+                            .font(.system(size: 13, weight: .medium))
+                            .strikethrough(reminder.isCompleted)
+                            .foregroundStyle(reminder.isCompleted ? Color.secondary : Color.primary)
+                            .lineLimit(1)
+                            .layoutPriority(1)
+                        Spacer(minLength: 4)
+                        compactStatus
+                    }
+                    metaLine(includeDueDate: false)
+                } else {
+                    Text(reminder.title)
+                        .font(.system(size: 13, weight: .medium))
+                        .strikethrough(reminder.isCompleted)
+                        .foregroundStyle(reminder.isCompleted ? Color.secondary : Color.primary)
+                    metaLine
+                }
             }
             Spacer()
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.vertical, isCompact ? 4 : 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
             rowSelectionHighlight(selected: isSelected, hovered: isHovered)
@@ -208,7 +225,32 @@ struct ReminderRowView: View {
     }
 
     @ViewBuilder
+    private var compactStatus: some View {
+        if reminder.isCompleted {
+            if let cd = reminder.completionDate {
+                Text(cd.formatted(date: .omitted, time: .shortened))
+            }
+        } else if let comps = reminder.dueDateComponents,
+                  let due = Calendar.current.date(from: comps) {
+            if isOverdue {
+                Text(due.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated)))
+                    .foregroundStyle(.red)
+            } else {
+                Text(Self.dateLabel(for: due, calendar: .current))
+                if comps.hour != nil {
+                    Text(due.formatted(date: .omitted, time: .shortened))
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
     private var metaLine: some View {
+        metaLine(includeDueDate: true)
+    }
+
+    @ViewBuilder
+    private func metaLine(includeDueDate: Bool) -> some View {
         HStack(spacing: 4) {
             if reminder.isCompleted {
                 if let cd = reminder.completionDate {
@@ -221,7 +263,9 @@ struct ReminderRowView: View {
                         .frame(width: 8, height: 8)
                     Text(cal.title)
                 }
-                if let comps = reminder.dueDateComponents, let due = Calendar.current.date(from: comps) {
+                if includeDueDate,
+                   let comps = reminder.dueDateComponents,
+                   let due = Calendar.current.date(from: comps) {
                     Text("·")
                     if isOverdue {
                         Text(due.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated)))
@@ -264,7 +308,7 @@ struct ReminderRowView: View {
                 }
             }
             ForEach(tags, id: \.self) { tag in
-                TagChip(name: tag)
+                TagChip(name: tag, isDimmed: isDimmed)
             }
         }
         .font(.caption)
@@ -277,6 +321,7 @@ struct ReminderRowView: View {
         @ObservedObject private var tagStore = TagStore.shared
         @ObservedObject private var filterStore = FilterStore.shared
         let name: String
+        let isDimmed: Bool
 
         /// True when this chip's tag is the active list filter.
         private var isActive: Bool {
@@ -298,7 +343,17 @@ struct ReminderRowView: View {
                 }
                 .padding(.horizontal, 5)
                 .padding(.vertical, 1)
-                .liquidGlassChip(in: RoundedRectangle(cornerRadius: 3), tint: color, filled: true)
+                // Glass effects escape native scroll clipping on macOS 26;
+                // keep row tags as ordinary bounded drawing instead.
+                .background {
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(color.opacity(isDimmed ? 0.12 : 0.2))
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 3)
+                        .stroke(color.opacity(isDimmed ? 0.18 : 0.55), lineWidth: 0.75)
+                }
+                .opacity(isDimmed ? 0.42 : 1)
                 .overlay {
                     if isActive {
                         RoundedRectangle(cornerRadius: 3)

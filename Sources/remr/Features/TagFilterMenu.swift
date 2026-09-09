@@ -13,6 +13,7 @@ struct TagFilterMenu: View {
     let tagCounts: [String: Int]
     @Binding var isPresented: Bool
     var onManage: () -> Void = {}
+    var isDimmed = false
     @ObservedObject private var filterStore = FilterStore.shared
     @ObservedObject private var tagStore = TagStore.shared
 
@@ -34,7 +35,7 @@ struct TagFilterMenu: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
             .frame(minHeight: 30)
-            .liquidGlassCapsule()
+            .liquidGlassCapsule(dimmed: isDimmed)
         }
         .buttonStyle(.plain)
         .help(filterStore.tag.map { "Filtered by #\($0) — click to change" } ?? "Filter by tag")

@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Local AI features** — optional Ollama support for Markdown import, voice cleanup, and embedding-based Smart Search; Settings lists installed generation and embedding models separately.
+- **Voice capture and log** — capture spoken reminders, clean the transcript locally, and review saved voice entries.
+- **Pomodoro timer** — run focus and short-break sessions with adjustable durations from the menu bar.
 - **Calendar view** — a new ⌥⌘C popover with month, week, and day layouts. Reminders appear as chips on their due dates; drag a chip to reschedule (timed reminders keep their time), right-click to snooze, and toggle "Show completed" to reveal completed reminders struck through. "Show Gantt bars" draws continuous, lane-aligned bars from today to each due date (red when overdue) across the month and week grids; the checkbox stays available while switching calendar views.
 - **Reminder detail page** — double-click any reminder (or a calendar chip) to open a read-only detail view: title, notes, tags, list, priority, recurrence, created date, and a location map. Edit or open in Reminders from the footer.
 - **Ongoing reminders** — mark any incomplete reminder as ongoing from its context menu; ongoing reminders pin to a dedicated section ahead of the chronological buckets without changing their due date.

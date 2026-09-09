@@ -115,6 +115,15 @@ enum FeatureInventory {
             name: "Reminder popover",
             summary: "Provides the menu bar list, sections, selection, completion, context actions, and sync footer."),
         FeatureInventoryItem(
+            name: "Pomodoro timer",
+            summary: "Runs focus and short-break sessions with adjustable durations and completion controls."),
+        FeatureInventoryItem(
+            name: "Local AI features",
+            summary: "Uses local Ollama models for bulk cleanup, voice cleanup, and cached embedding-based Smart Search."),
+        FeatureInventoryItem(
+            name: "Voice capture and log",
+            summary: "Captures spoken reminders, cleans them locally, and keeps a searchable voice log."),
+        FeatureInventoryItem(
             name: "Search query language",
             summary: "Searches reminder text, @lists, #tags, and priority markers, including completed matches."),
         FeatureInventoryItem(

@@ -344,6 +344,7 @@ struct ReminderDetailView: View {
             ForEach(tags, id: \.self) { tag in
                 Text("#\(tag)")
                     .font(.caption)
+                    .foregroundStyle(.white)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 4)
                     .liquidGlassChip(tint: tagStore.color(for: tag), filled: true)
@@ -567,7 +568,9 @@ struct ReminderDetailView: View {
     private var snoozeActions: CalendarActions {
         CalendarActions(onSnooze: applySnooze,
                         onCustomSnooze: { _ in showSnoozePicker = true },
-                        onClearDue: { _ in clearDue() })
+                        onClearDue: { _ in clearDue() },
+                        onMoveToList: onMoveToList,
+                        calendars: store.reminderCalendars())
     }
 
     private func applySnooze(_ reminder: EKReminder, _ choice: SnoozeChoice) {

@@ -3,12 +3,13 @@ import Foundation
 
 /// The list's chronological sections. A reminder lands in exactly one bucket
 /// (first matching range wins, in declaration order); reminders with no due
-/// date go to FUTURE. Week/month boundaries come from the calendar, so
+/// date go to FUTURE. Tomorrow is separated from the rest of this week. Week/month boundaries come from the calendar, so
 /// locale-specific week starts are respected.
 enum ReminderSection: String, CaseIterable {
     case ongoing = "ONGOING"
     case overdue = "OVERDUE"
     case today = "TODAY"
+    case tomorrow = "TOMORROW"
     case thisWeek = "THIS WEEK"
     case nextWeek = "NEXT WEEK"
     case thisMonth = "THIS MONTH"
@@ -20,6 +21,7 @@ enum ReminderSection: String, CaseIterable {
     struct Bounds {
         let startOfToday: Date
         let startOfTomorrow: Date
+        let startOfDayAfterTomorrow: Date
         let startOfNextWeek: Date
         let startOfWeekAfterNext: Date
         let startOfNextMonth: Date
@@ -29,15 +31,17 @@ enum ReminderSection: String, CaseIterable {
     static func bounds(now: Date = Date(), calendar: Calendar = .current) -> Bounds {
         let startOfToday = calendar.startOfDay(for: now)
         let startOfTomorrow = calendar.date(byAdding: .day, value: 1, to: startOfToday) ?? startOfToday
+        let startOfDayAfterTomorrow = calendar.date(byAdding: .day, value: 1, to: startOfTomorrow) ?? startOfTomorrow
         // Week = calendar week-of-year (e.g. Monday–Sunday in en_US): "this
-        // week" is the remainder of the current week after today, "next week"
-        // the following one. Month boundaries are calendar month starts.
+        // week" is the remainder of the current week after tomorrow, "next
+        // week" the following one. Month boundaries are calendar month starts.
         let startOfNextWeek = calendar.dateInterval(of: .weekOfYear, for: now)?.end ?? startOfTomorrow
         let startOfWeekAfterNext = calendar.date(byAdding: .weekOfYear, value: 1, to: startOfNextWeek) ?? startOfNextWeek
         let startOfNextMonth = calendar.dateInterval(of: .month, for: now)?.end ?? startOfWeekAfterNext
         let startOfMonthAfterNext = calendar.date(byAdding: .month, value: 1, to: startOfNextMonth) ?? startOfNextMonth
         return Bounds(startOfToday: startOfToday,
                       startOfTomorrow: startOfTomorrow,
+                      startOfDayAfterTomorrow: startOfDayAfterTomorrow,
                       startOfNextWeek: startOfNextWeek,
                       startOfWeekAfterNext: startOfWeekAfterNext,
                       startOfNextMonth: startOfNextMonth,
@@ -64,6 +68,7 @@ enum ReminderSection: String, CaseIterable {
         // next bucket wins — the same precedence the switch encoded.
         if due < bounds.startOfToday { return .overdue }
         if due < bounds.startOfTomorrow { return .today }
+        if due < bounds.startOfDayAfterTomorrow { return .tomorrow }
         if due < bounds.startOfNextWeek { return .thisWeek }
         if due < bounds.startOfWeekAfterNext { return .nextWeek }
         if due < bounds.startOfNextMonth { return .thisMonth }

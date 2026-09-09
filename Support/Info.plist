@@ -26,6 +26,10 @@
 	<true/>
 	<key>NSRemindersUsageDescription</key>
 	<string>remr needs access to your Reminders to show, create, and manage your reminders.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>remr uses the microphone only when you explicitly start voice dictation.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>remr uses on-device speech recognition to turn your dictation into reminder drafts.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>remr uses your current location only when you add a location to a reminder (like “at the office” or “here”), to find places near you and set the reminder’s alert. Your location is never stored, logged, or shared, and remr never tracks you in the background.</string>
 	<key>NSServices</key>

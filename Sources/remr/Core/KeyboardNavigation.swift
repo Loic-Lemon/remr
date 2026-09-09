@@ -128,6 +128,10 @@ enum KeyboardRouter {
             return .none
         case .openCalendar:
             return .none
+        case .voiceVerify:
+            return .none
+        case .voiceLog:
+            return .none
         }
     }
 }

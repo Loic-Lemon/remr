@@ -15,7 +15,8 @@ struct ContentView: View {
                 MainView()
             }
         }
-        .frame(width: 400, height: 600)
+        .frame(width: 400)
+        .frame(minHeight: 600)
         .liquidGlassContainer()
     }
 

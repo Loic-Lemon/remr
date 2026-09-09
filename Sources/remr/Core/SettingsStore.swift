@@ -112,13 +112,31 @@ enum MenuBarIconBadge: String, CaseIterable, Identifiable {
 enum MenuBarIconSymbol: String, CaseIterable, Identifiable {
     case bellBadge = "bell.badge"
     case checklist = "checklist"
+    case listBullet = "list.bullet"
+    case checkmarkSquare = "checkmark.square"
     case bell = "bell"
     case checkmarkCircle = "checkmark.circle"
     case exclamationmarkCircle = "exclamationmark.circle"
     case clockBadge = "clock.badge"
+    case calendar = "calendar"
+    case tray = "tray"
+    case timer = "timer"
+    case hourglass = "hourglass"
     case tag = "tag"
     case flag = "flag"
     case star = "star"
+    case target = "target"
+    case bolt = "bolt"
+    case paperclip = "paperclip"
+    case pencil = "pencil"
+    case folder = "folder"
+    case archivebox = "archivebox"
+    case bellSlash = "bell.slash"
+    case arrowClockwise = "arrow.clockwise"
+    case gearshape = "gearshape"
+    case magnifyingglass = "magnifyingglass"
+    case circle = "circle"
+    case square = "square"
     case moon = "moon"
     case sunMax = "sun.max"
 
@@ -128,13 +146,31 @@ enum MenuBarIconSymbol: String, CaseIterable, Identifiable {
         switch self {
         case .bellBadge: return "Bell with badge"
         case .checklist: return "Checklist"
+        case .listBullet: return "List"
+        case .checkmarkSquare: return "Checkmark square"
         case .bell: return "Bell"
         case .checkmarkCircle: return "Checkmark circle"
         case .exclamationmarkCircle: return "Exclamation circle"
         case .clockBadge: return "Clock with badge"
+        case .calendar: return "Calendar"
+        case .tray: return "Tray"
+        case .timer: return "Timer"
+        case .hourglass: return "Hourglass"
         case .tag: return "Tag"
         case .flag: return "Flag"
         case .star: return "Star"
+        case .target: return "Target"
+        case .bolt: return "Bolt"
+        case .paperclip: return "Paperclip"
+        case .pencil: return "Pencil"
+        case .folder: return "Folder"
+        case .archivebox: return "Archive box"
+        case .bellSlash: return "Muted bell"
+        case .arrowClockwise: return "Refresh"
+        case .gearshape: return "Settings"
+        case .magnifyingglass: return "Search"
+        case .circle: return "Circle"
+        case .square: return "Square"
         case .moon: return "Moon"
         case .sunMax: return "Sun"
         }
@@ -166,11 +202,21 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var menuBarIconBadge: MenuBarIconBadge
     /// Shows the current week's calendar at the bottom of the main popover.
     @Published private(set) var showBottomCalendar: Bool
+    /// Uses the denser, rearranged reminder row layout.
+    @Published private(set) var compactItems: Bool
     /// Reminder lists (categories) hidden from the main list, keyed by
     /// calendar identifier (empty = all visible).
     @Published private(set) var hiddenLists: Set<String>
     /// Enables local Ollama parsing for Markdown bulk imports.
     @Published private(set) var ollamaEnabled: Bool
+    /// Selected Ollama model for local features.
+    @Published private(set) var ollamaModel: String
+    /// Selected Ollama embedding model for Smart Search.
+    @Published private(set) var ollamaEmbeddingModel: String
+    /// Shows the Pomodoro timer disclosure and floating completion panel.
+    @Published private(set) var pomodoroEnabled: Bool
+    /// Selected Core Audio input device UID; nil follows the system default.
+    @Published private(set) var voiceInputDeviceID: String?
 
     /// Shown under the Keyboard section; set by assign() or by AppDelegate on
     /// hotkey registration failure.
@@ -194,10 +240,15 @@ final class SettingsStore: ObservableObject {
     /// Legacy persisted form (archived NSColor) from before canonicalization.
     private let menuBarIconColorKey = "remr.menuBarIconColor"
     private let showBottomCalendarKey = "remr.showBottomCalendar"
+    private let compactItemsKey = "remr.compactItems"
     /// Persisted as calendar identifiers. Identifiers of lists deleted in
     /// Reminders simply match nothing, so stale entries are harmless.
     private let hiddenListsKey = "remr.hiddenLists"
     private let ollamaEnabledKey = "remr.ollamaEnabled"
+    private let ollamaModelKey = "remr.ollamaModel"
+    private let ollamaEmbeddingModelKey = "remr.ollamaEmbeddingModel"
+    private let pomodoroEnabledKey = "remr.pomodoroEnabled"
+    private let voiceInputDeviceIDKey = "remr.voiceInputDeviceID"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -210,8 +261,13 @@ final class SettingsStore: ObservableObject {
                                           rgbaKey: menuBarIconColorRGBAKey,
                                           legacyKey: menuBarIconColorKey) ?? .accentColor
         showBottomCalendar = defaults.object(forKey: showBottomCalendarKey) as? Bool ?? true
+        compactItems = defaults.object(forKey: compactItemsKey) as? Bool ?? false
         hiddenLists = Set(defaults.stringArray(forKey: hiddenListsKey) ?? [])
         ollamaEnabled = defaults.object(forKey: ollamaEnabledKey) as? Bool ?? false
+        ollamaModel = defaults.string(forKey: ollamaModelKey) ?? "qwen2.5:3b"
+        ollamaEmbeddingModel = defaults.string(forKey: ollamaEmbeddingModelKey) ?? "nomic-embed-text"
+        pomodoroEnabled = defaults.object(forKey: pomodoroEnabledKey) as? Bool ?? false
+        voiceInputDeviceID = defaults.string(forKey: voiceInputDeviceIDKey)
         errorMessage = nil
     }
 
@@ -253,10 +309,44 @@ final class SettingsStore: ObservableObject {
         defaults.set(enabled, forKey: showBottomCalendarKey)
     }
 
+    func setCompactItems(_ enabled: Bool) {
+        guard compactItems != enabled else { return }
+        compactItems = enabled
+        defaults.set(enabled, forKey: compactItemsKey)
+    }
+
     func setOllamaEnabled(_ enabled: Bool) {
         guard ollamaEnabled != enabled else { return }
         ollamaEnabled = enabled
         defaults.set(enabled, forKey: ollamaEnabledKey)
+    }
+
+    func setOllamaModel(_ model: String) {
+        guard !model.isEmpty, ollamaModel != model else { return }
+        ollamaModel = model
+        defaults.set(model, forKey: ollamaModelKey)
+    }
+
+    func setOllamaEmbeddingModel(_ model: String) {
+        guard !model.isEmpty, ollamaEmbeddingModel != model else { return }
+        ollamaEmbeddingModel = model
+        defaults.set(model, forKey: ollamaEmbeddingModelKey)
+    }
+
+    func setPomodoroEnabled(_ enabled: Bool) {
+        guard pomodoroEnabled != enabled else { return }
+        pomodoroEnabled = enabled
+        defaults.set(enabled, forKey: pomodoroEnabledKey)
+    }
+
+    func setVoiceInputDeviceID(_ identifier: String?) {
+        guard voiceInputDeviceID != identifier else { return }
+        voiceInputDeviceID = identifier
+        if let identifier, !identifier.isEmpty {
+            defaults.set(identifier, forKey: voiceInputDeviceIDKey)
+        } else {
+            defaults.removeObject(forKey: voiceInputDeviceIDKey)
+        }
     }
 
     /// Toggle one reminder list's visibility in the main list; persisted as

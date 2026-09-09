@@ -2,10 +2,17 @@ import AppKit
 import EventKit
 import SwiftUI
 
+enum MainPopoverLayout {
+    static let baseHeight: CGFloat = 600
+    static let pomodoroHeaderHeight: CGFloat = 36
+}
+
 extension Notification.Name {
     /// Posted (userInfo ["id": calendarItemIdentifier]) when the calendar asks
     /// the main popover to show a reminder's detail page.
     static let remrShowReminderDetail = Notification.Name("remr.showReminderDetail")
+    static let remrShowBulkPreview = Notification.Name("remr.showBulkPreview")
+    static let remrPopoverClosing = Notification.Name("remr.popoverClosing")
 }
 
 /// The single-page popover: add a reminder on top, search below it,
@@ -13,13 +20,41 @@ extension Notification.Name {
 struct MainView: View {
     @EnvironmentObject var store: ReminderStore
     @EnvironmentObject var settings: SettingsStore
+    @EnvironmentObject var voiceLogStore: VoiceLogStore
     @ObservedObject private var filterStore = FilterStore.shared
+    @ObservedObject private var pomodoro = PomodoroTimerStore.shared
     @State private var searchText = ""
+    @State private var smartSearchEnabled = false
+    @State private var smartSearchIDs: [String]?
+    @State private var smartSearchTask: Task<Void, Never>?
+    @State private var embeddingCache: [String: [Double]] = [:]
+    @State private var smartSearchLoading = false
+    @State private var smartSearchError: String?
     @State private var showGuide = false
     @State private var showRecovery = false
     @State private var showSettings = false
+    @State private var hoveredToolbarTool: String?
+    @State private var showPomodoro = false
+    @State private var pomodoroPresented = false
+    @State private var pomodoroTransitionGeneration = 0
+    private let popoverBaseHeight = MainPopoverLayout.baseHeight
+    private let pomodoroHeaderHeight = MainPopoverLayout.pomodoroHeaderHeight
+    private let pomodoroPanelHeight: CGFloat = 470
+    // Give the timer room by compressing the reminder area while it is open;
+    // keeping the whole popover below the screen edge prevents AppKit from
+    // jumping it to a different position.
+    private let pomodoroOpenBaseHeight: CGFloat = 420
+
+    private var collapsedPopoverHeight: CGFloat {
+        popoverBaseHeight + (settings.pomodoroEnabled ? pomodoroHeaderHeight : 0)
+    }
+
+    private var expandedPopoverHeight: CGFloat {
+        pomodoroOpenBaseHeight + pomodoroHeaderHeight + pomodoroPanelHeight
+    }
     @State private var bulkInput: String?
     @State private var showBulkInput = false
+    @State private var showVoiceLog = false
     @State private var editingReminder: EKReminder?
     /// Read-only detail page (double-click target); Edit hands off to the editor.
     @State private var viewingReminder: EKReminder?
@@ -126,9 +161,18 @@ struct MainView: View {
         return reminders.filter { SearchParser.matches($0, query: query, calendarTitles: titles) }
     }
 
+    private func smartOrdered(_ reminders: [EKReminder]) -> [EKReminder] {
+        // Keep the ordinary search result while the local model is thinking;
+        // nil used to mean "show everything", which made Smart Search look broken.
+        guard let smartSearchIDs else { return searchMatches(reminders) }
+        let byID = Dictionary(uniqueKeysWithValues: reminders.map { ($0.calendarItemIdentifier, $0) })
+        return smartSearchIDs.compactMap { byID[$0] }
+    }
+
     private var filteredItems: [EKReminder] {
         let byTag = filtered(allItems)
-        return searchQuery == nil ? byTag : searchMatches(byTag)
+        guard searchQuery != nil else { return byTag }
+        return smartSearchEnabled ? smartOrdered(byTag) : searchMatches(byTag)
     }
 
     /// Completed reminders matching the search (tag filter applied). Search is
@@ -139,7 +183,8 @@ struct MainView: View {
         let pool = store.completedReminders.filter {
             !settings.hiddenLists.contains($0.calendar?.calendarIdentifier ?? "")
         }
-        return filtered(searchMatches(pool))
+        let byTag = filtered(pool)
+        return smartSearchEnabled ? smartOrdered(byTag) : searchMatches(byTag)
     }
 
     /// Every incomplete reminder bucketed into the pinned ongoing section or
@@ -180,6 +225,95 @@ struct MainView: View {
 
     private var isSearching: Bool {
         !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func startSmartSearch() {
+        smartSearchTask?.cancel()
+        smartSearchIDs = nil
+        smartSearchError = nil
+        guard smartSearchEnabled, settings.ollamaEnabled, isSearching else {
+            smartSearchLoading = false
+            return
+        }
+
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let embeddingModel = settings.ollamaEmbeddingModel
+        let visibleIncomplete = filtered(allItems)
+        let visibleCompleted = filtered(store.completedReminders.filter {
+            !settings.hiddenLists.contains($0.calendar?.calendarIdentifier ?? "")
+        })
+        let candidates = (visibleIncomplete + visibleCompleted).map { reminder in
+            OllamaSearchCandidate(
+                id: reminder.calendarItemIdentifier,
+                title: reminder.title ?? "",
+                notes: reminder.notes ?? "",
+                list: reminder.calendar?.title ?? "",
+                tags: NaturalLanguageParser.extractTags(from: (reminder.title ?? "") + " " + (reminder.notes ?? "")),
+                due: reminder.dueDateComponents.map(String.init(describing:)),
+                completed: reminder.isCompleted)
+        }
+        guard !candidates.isEmpty else {
+            smartSearchIDs = []
+            smartSearchLoading = false
+            return
+        }
+
+        func text(for candidate: OllamaSearchCandidate) -> String {
+            [candidate.title, candidate.notes, candidate.list, candidate.tags.joined(separator: " ")]
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n")
+        }
+
+        smartSearchLoading = true
+        smartSearchTask = Task {
+            do {
+                try await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled else { return }
+
+                let parser = OllamaReminderParser()
+                let texts = candidates.map(text(for:))
+                let keys = zip(candidates, texts).map { candidate, text in
+                    "\(embeddingModel)|\(candidate.id)|\(text)"
+                }
+                let missing = candidates.indices.filter { embeddingCache[keys[$0]] == nil }
+                var vectors = candidates.indices.map { embeddingCache[keys[$0]] ?? [] }
+                if !missing.isEmpty {
+                    let fetched = try await parser.embeddings(
+                        for: missing.map { texts[$0] }, model: embeddingModel)
+                    for (offset, index) in missing.enumerated() {
+                        vectors[index] = fetched[offset]
+                    }
+                }
+                let queryVector = try await parser.embeddings(
+                    for: [query], model: embeddingModel).first ?? []
+                let matches = zip(candidates, vectors)
+                    .map { ($0.id, Self.cosineSimilarity(queryVector, $1)) }
+                    .filter { $0.1 >= 0.25 }
+                    .sorted { $0.1 > $1.1 }
+                    .map(\.0)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    for (key, vector) in zip(keys, vectors) { embeddingCache[key] = vector }
+                    smartSearchIDs = matches
+                    smartSearchLoading = false
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    smartSearchLoading = false
+                    smartSearchError = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private static func cosineSimilarity(_ lhs: [Double], _ rhs: [Double]) -> Double {
+        guard lhs.count == rhs.count, !lhs.isEmpty else { return 0 }
+        let dot = zip(lhs, rhs).reduce(0) { $0 + $1.0 * $1.1 }
+        let lhsMagnitude = sqrt(lhs.reduce(0) { $0 + $1 * $1 })
+        let rhsMagnitude = sqrt(rhs.reduce(0) { $0 + $1 * $1 })
+        guard lhsMagnitude > 0, rhsMagnitude > 0 else { return 0 }
+        return dot / (lhsMagnitude * rhsMagnitude)
     }
 
     /// Chip color for the active-filter pill (same palette as the row chips).
@@ -268,6 +402,13 @@ struct MainView: View {
                                      self.editingReminder = nil
                                      showActionToast(message: "Saved reminder", duration: 2.5)
                                  })
+            } else if showVoiceLog {
+                VoiceLogView(store: voiceLogStore,
+                             onClose: { showVoiceLog = false },
+                             onAdd: { text in
+                                 showVoiceLog = false
+                                 AppDelegate.instance?.showBulkInPopover(text: text)
+                             })
             } else if showBulkInput {
                 BulkReminderInputView(
                     onCancel: { showBulkInput = false },
@@ -326,7 +467,26 @@ struct MainView: View {
                             reservedTopHeight = height
                         }
                     }
+                    .frame(height: pomodoroPresented ? pomodoroOpenBaseHeight : popoverBaseHeight)
+                    .blur(radius: pomodoroPresented ? 8 : 0)
+                    .animation(.easeInOut(duration: 0.24), value: pomodoroPresented)
+                    pomodoroSection
                 }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .remrPopoverClosing)) { _ in
+            collapsePomodoro(animated: false)
+        }
+        .onChange(of: settings.pomodoroEnabled) { enabled in
+            if enabled {
+                pomodoroTransitionGeneration &+= 1
+                showPomodoro = false
+                pomodoroPresented = false
+                DispatchQueue.main.async {
+                    AppDelegate.instance?.setPopoverHeight(self.collapsedPopoverHeight)
+                }
+            } else {
+                collapsePomodoro(animated: false)
             }
         }
         .onAppear {
@@ -357,7 +517,7 @@ struct MainView: View {
                 }()
                 let ctx = KeyboardContext(
                     textFieldFocused: firstResponder is EnterSubmitTextView,
-                    searchFieldFocused: firstResponder is NSTextField,
+                    searchFieldFocused: searchFocused || firstResponder is NSTextField,
                     selectionIsHeader: {
                         if case .tabHeader = selection { return true }
                         return false
@@ -422,6 +582,7 @@ struct MainView: View {
             heldKeys = []
             firedKeys = nil
             actionToastTask?.cancel()
+            smartSearchTask?.cancel()
         }
         .onReceive(NotificationCenter.default.publisher(for: .remrShowReminderDetail)) { note in
             // Calendar double-click handoff: show the detail page for the
@@ -433,6 +594,18 @@ struct MainView: View {
             editingReminder = nil
             selection = nil
             viewingReminder = reminder
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .remrShowBulkPreview)) { note in
+            // Voice flows hand cleaned text to the same verify-and-edit list
+            // bulk import uses, inside this popover — never a second window.
+            guard let text = note.userInfo?["text"] as? String else { return }
+            showSettings = false
+            editingReminder = nil
+            viewingReminder = nil
+            showBulkInput = false
+            undoEntry = nil
+            selection = nil
+            bulkInput = text
         }
         .background(WindowProbe { popoverWindow = $0 })
         .confirmationDialog("Delete Forever?", isPresented: $confirmDeleteForever,
@@ -451,106 +624,195 @@ struct MainView: View {
         }
     }
 
-    /// Search field and adjacent actions share the compact glass toolbar.
+    /// A direct toolbar action with a small, appearance-aware hover label.
+    @ViewBuilder
+    private func toolbarIconButton(systemImage: String,
+                                    title: String,
+                                    disabled: Bool = false,
+                                    action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 14))
+                .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            hoveredToolbarTool = hovering ? title : (hoveredToolbarTool == title ? nil : hoveredToolbarTool)
+        }
+        .overlay(alignment: .bottom) {
+            if hoveredToolbarTool == title {
+                Text(title)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(.thinMaterial, in: Capsule())
+                    .overlay(Capsule().stroke(AppPalette.controlStroke, lineWidth: 0.5))
+                    .fixedSize()
+                    .offset(y: 23)
+                    .allowsHitTesting(false)
+                    .zIndex(1)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.12), value: hoveredToolbarTool)
+    }
+
+    /// Search and navigation actions use two compact, centered toolbar rows.
     private var searchRow: some View {
-        HStack(spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                TextField("Search", text: $searchText)
-                    .textFieldStyle(.plain)
-                    .focused($searchFocused)
-                    .onChange(of: searchText) { _ in selection = nil }
-                    .onChange(of: filterStore.tag) { _ in selection = nil }
-                if !searchText.isEmpty {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("Search", text: $searchText)
+                        .textFieldStyle(.plain)
+                        .focused($searchFocused)
+                        .onChange(of: searchText) { _ in
+                            selection = nil
+                            startSmartSearch()
+                        }
+                        .onChange(of: filterStore.tag) { _ in
+                            selection = nil
+                            startSmartSearch()
+                        }
+                    if !searchText.isEmpty {
+                        Button {
+                            searchText = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Clear search")
+                    }
                     Button {
-                        searchText = ""
+                        smartSearchEnabled.toggle()
+                        startSmartSearch()
                     } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
+                        if smartSearchLoading {
+                            ProgressView()
+                                .controlSize(.mini)
+                                .tint(Color.accentColor)
+                        } else {
+                            Image(systemName: smartSearchEnabled ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(smartSearchEnabled ? Color.accentColor : .secondary)
+                        }
                     }
                     .buttonStyle(.plain)
-                    .help("Clear search")
+                    .disabled(!settings.ollamaEnabled)
+                    .contentShape(Rectangle())
+                    .onHover { hovering in
+                        let title = "Local model enabled search"
+                        hoveredToolbarTool = hovering ? title :
+                            (hoveredToolbarTool == title ? nil : hoveredToolbarTool)
+                    }
+                    .overlay(alignment: .bottom) {
+                        if hoveredToolbarTool == "Local model enabled search" {
+                            Text("Local model enabled search")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
+                                .background(.thinMaterial, in: Capsule())
+                                .overlay(Capsule().stroke(AppPalette.controlStroke, lineWidth: 0.5))
+                                .fixedSize()
+                                .offset(y: 23)
+                                .allowsHitTesting(false)
+                                .zIndex(1)
+                                .transition(.opacity)
+                        }
+                    }
+                    .animation(.easeOut(duration: 0.12), value: hoveredToolbarTool)
+                    .help(smartSearchError ?? (settings.ollamaEnabled ? "Use Smart Search" :
+                            "Enable local model features in Settings"))
                 }
-            }
-            .padding(.horizontal, 11)
-            .frame(minHeight: 30)
-            .liquidGlassField(in: Capsule())
-            TagFilterMenu(allTags: allTags,
-                          tagCounts: tagCounts,
-                          isPresented: $showTagFilter,
-                          onManage: { showTagManager = true })
-            .popover(isPresented: $showTagManager, arrowEdge: .bottom) {
-                TagManagerView()
-                    .environmentObject(store)
-            }
+                .padding(.horizontal, 11)
+                .frame(minHeight: 30)
+                .liquidGlassField(in: Capsule())
 
-            Button {
-                showListPicker.toggle()
-            } label: {
-                Image(systemName: "rectangle.3.group")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help("Show or hide reminder lists")
-            .background {
-                FastPopoverPresenter(
-                    isPresented: showListPicker,
-                    content: AnyView(
-                        ListPickerView(counts: listCounts,
-                                       onClose: { showListPicker = false })
-                            .environmentObject(settings)
-                    ),
-                    onDismiss: { showListPicker = false }
-                )
-            }
+                TagFilterMenu(allTags: allTags,
+                              tagCounts: tagCounts,
+                              isPresented: $showTagFilter,
+                              onManage: { showTagManager = true })
+                .popover(isPresented: $showTagManager, arrowEdge: .bottom) {
+                    TagManagerView()
+                        .environmentObject(store)
+                }
 
-            if let activeFilter {
-                HStack(spacing: 4) {
-                    Text("#\(activeFilter)")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(filterColor)
-                    Button {
-                        filterStore.clear()
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.caption2)
+                Button {
+                    showListPicker.toggle()
+                } label: {
+                    Image(systemName: "rectangle.3.group")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Show or hide reminder lists")
+                .background {
+                    FastPopoverPresenter(
+                        isPresented: showListPicker,
+                        content: AnyView(
+                            ListPickerView(counts: listCounts,
+                                           onClose: { showListPicker = false })
+                                .environmentObject(settings)
+                        ),
+                        onDismiss: { showListPicker = false }
+                    )
+                }
+
+                toolbarIconButton(systemImage: "gearshape", title: "Settings") {
+                    showSettings = true
+                }
+
+                if let activeFilter {
+                    HStack(spacing: 4) {
+                        Text("#\(activeFilter)")
+                            .font(.caption2.weight(.semibold))
                             .foregroundStyle(filterColor)
+                        Button {
+                            filterStore.clear()
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.caption2)
+                                .foregroundStyle(filterColor)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Clear tag filter")
                     }
-                    .buttonStyle(.plain)
-                    .help("Clear tag filter")
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .liquidGlassCapsule(tint: filterColor, dimmed: pomodoroPresented)
+                    .help("Filtered by #\(activeFilter)")
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .liquidGlassCapsule(tint: filterColor)
-                .help("Filtered by #\(activeFilter)")
             }
-            Button {
-                showBulkInput = true
-            } label: {
-                Image(systemName: "square.and.pencil")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .disabled(!settings.ollamaEnabled)
-            .help(settings.ollamaEnabled ? "Bulk import reminders" : "Enable local model features in Settings")
 
-            Button {
-                showRecovery.toggle()
-            } label: {
-                Image(systemName: "archivebox")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help("Recently completed and deleted")
-            .background {
-                FastPopoverPresenter(
-                    isPresented: showRecovery,
-                    content: AnyView(
-                        RecoveryPopoverView(
+            HStack(spacing: 14) {
+                toolbarIconButton(systemImage: "square.and.pencil",
+                                   title: "Bulk import",
+                                   disabled: !settings.ollamaEnabled) {
+                    showBulkInput = true
+                }
+
+                toolbarIconButton(systemImage: "waveform", title: "Voice capture",
+                                   disabled: !settings.ollamaEnabled) {
+                    AppDelegate.instance?.toggleVoice(mode: .log)
+                }
+
+                toolbarIconButton(systemImage: "text.book.closed", title: "Voice log",
+                                   disabled: !settings.ollamaEnabled) {
+                    showVoiceLog = true
+                }
+
+                toolbarIconButton(systemImage: "arrow.uturn.backward.circle", title: "Recovery") {
+                    showRecovery = true
+                }
+                .background {
+                    FastPopoverPresenter(
+                        isPresented: showRecovery,
+                        content: AnyView(RecoveryPopoverView(
                             onClose: { showRecovery = false },
                             onToggleCompletion: performToggleCompletion,
                             onDelete: performDelete,
@@ -560,51 +822,28 @@ struct MainView: View {
                             onCopyTitle: copyReminderTitle,
                             onRestored: handleRestored,
                             onDeletedForever: handleDeletedForever
-                        )
-                        .environmentObject(store)
-                    ),
-                    onDismiss: { showRecovery = false }
-                )
-            }
+                        ).environmentObject(store)),
+                        onDismiss: { showRecovery = false })
+                }
 
+                toolbarIconButton(systemImage: "calendar", title: "Calendar") {
+                    AppDelegate.instance?.showCalendar()
+                }
 
-            Button {
-                showGuide.toggle()
-            } label: {
-                Image(systemName: "info.circle")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
+                toolbarIconButton(systemImage: "questionmark.circle", title: "Guide") {
+                    showGuide = true
+                }
+                .background {
+                    FastPopoverPresenter(
+                        isPresented: showGuide,
+                        content: AnyView(GuideView(onClose: { showGuide = false })),
+                        onDismiss: { showGuide = false })
+                }
             }
-            .buttonStyle(.plain)
-            .help("How to use remr")
-            .background {
-                FastPopoverPresenter(
-                    isPresented: showGuide,
-                    content: AnyView(GuideView(onClose: { showGuide = false })),
-                    onDismiss: { showGuide = false }
-                )
-            }
-
-            Button {
-                AppDelegate.instance?.showCalendar()
-            } label: {
-                Image(systemName: "calendar")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help("Calendar view")
-
-            Button {
-                showSettings = true
-            } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help("Settings")
+            .frame(maxWidth: .infinity)
         }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
         // The macOS 26 popover already supplies the full-window glass surface;
         // adding another glass lens beneath these compact controls makes them
         // read as a flat layer. Older systems use the fallback toolbar band.
@@ -613,7 +852,7 @@ struct MainView: View {
         .padding(.bottom, 10)
         .padding(.horizontal, 12)
         .liquidGlassToolbarSurface()
-        .zIndex((showTagFilter || showRecovery || showListPicker) ? 10 : 0)
+        .zIndex((showTagFilter || showRecovery || showListPicker || showGuide) ? 10 : 0)
     }
 
     /// The current week's calendar pinned under the list (opt-in setting):
@@ -688,6 +927,45 @@ struct MainView: View {
         }
     }
 
+    @ViewBuilder
+    private var pomodoroSection: some View {
+        if settings.pomodoroEnabled {
+            Button(action: togglePomodoro) {
+                HStack(spacing: 6) {
+                    Image(systemName: "timer")
+                        .foregroundStyle(.orange)
+                    Text("Pomodoro")
+                        .font(.caption.weight(.semibold))
+                    Spacer()
+                    Image(systemName: "chevron.down")
+                        .font(.caption2.weight(.bold))
+                        .rotationEffect(.degrees(pomodoroPresented ? 180 : 0))
+                }
+                .foregroundStyle(.primary)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+                .contentShape(Rectangle())
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 36)
+            .buttonStyle(.plain)
+            .help(pomodoroPresented ? "Hide Pomodoro timer" : "Show Pomodoro timer")
+
+            if showPomodoro {
+                PomodoroTimerView(timer: pomodoro)
+                    .frame(maxWidth: .infinity)
+                    .opacity(pomodoroPresented ? 1 : 0)
+                    .offset(y: pomodoroPresented ? 0 : 14)
+                    // Animate the panel's layout height as well as its
+                    // content. Inserting a full-height view before the
+                    // popover resizes causes a one-frame jump.
+                    .frame(height: pomodoroPresented ? pomodoroPanelHeight : 0,
+                           alignment: .top)
+                    .clipped()
+            }
+        }
+    }
+
     private var listArea: some View {
         // The bottom band (week calendar + sync footer) is a sibling below the
         // scroll view rather than a safeAreaInset: safeAreaInset does not
@@ -714,6 +992,7 @@ struct MainView: View {
                                 ForEach(filteredItems, id: \.calendarItemIdentifier) { reminder in
                                     ReminderRowView(reminder: reminder,
                                                     isSelected: selection == .reminder(reminder.calendarItemIdentifier),
+                                                    isDimmed: pomodoroPresented,
                                                     onSelect: { selectRow(.reminder(reminder.calendarItemIdentifier)) },
                                                     onOpen: { viewingReminder = reminder },
                                                     onToggleCompletion: performToggleCompletion,
@@ -722,7 +1001,8 @@ struct MainView: View {
                                                     onSnooze: beginSnooze,
                                                     onDuplicate: duplicateReminder,
                                                     onMoveToList: moveReminder,
-                                                    onCopyTitle: copyReminderTitle)
+                                                    onCopyTitle: copyReminderTitle,
+                                                    isCompact: settings.compactItems)
                                     .transition(removalTransition)
                                     .id(rowID(.reminder(reminder.calendarItemIdentifier)))
                                     Divider()
@@ -738,6 +1018,7 @@ struct MainView: View {
                                     ForEach(searchCompletedItems, id: \.calendarItemIdentifier) { reminder in
                                         ReminderRowView(reminder: reminder,
                                                         isSelected: selection == .reminder(reminder.calendarItemIdentifier),
+                                                        isDimmed: pomodoroPresented,
                                                         onSelect: { selectRow(.reminder(reminder.calendarItemIdentifier)) },
                                                         onOpen: { viewingReminder = reminder },
                                                         onToggleCompletion: performToggleCompletion,
@@ -746,7 +1027,8 @@ struct MainView: View {
                                                         onSnooze: beginSnooze,
                                                         onDuplicate: duplicateReminder,
                                                         onMoveToList: moveReminder,
-                                                        onCopyTitle: copyReminderTitle)
+                                                        onCopyTitle: copyReminderTitle,
+                                                        isCompact: settings.compactItems)
                                         .transition(removalTransition)
                                         .id(rowID(.reminder(reminder.calendarItemIdentifier)))
                                     }
@@ -764,6 +1046,7 @@ struct MainView: View {
                                     ForEach(items, id: \.calendarItemIdentifier) { reminder in
                                         ReminderRowView(reminder: reminder,
                                                         isSelected: selection == .reminder(reminder.calendarItemIdentifier),
+                                                        isDimmed: pomodoroPresented,
                                                         onSelect: { selectRow(.reminder(reminder.calendarItemIdentifier)) },
                                                         onOpen: { viewingReminder = reminder },
                                                         onToggleCompletion: performToggleCompletion,
@@ -772,7 +1055,8 @@ struct MainView: View {
                                                         onSnooze: beginSnooze,
                                                         onDuplicate: duplicateReminder,
                                                         onMoveToList: moveReminder,
-                                                        onCopyTitle: copyReminderTitle)
+                                                        onCopyTitle: copyReminderTitle,
+                                                        isCompact: settings.compactItems)
                                         .transition(removalTransition)
                                         .id(rowID(.reminder(reminder.calendarItemIdentifier)))
                                     }
@@ -791,6 +1075,9 @@ struct MainView: View {
                     }
                 }
                 .scrollIndicators(.hidden)
+                // Keep glass chips inside the viewport; macOS can otherwise
+                // let their effects bleed past the ScrollView's bounds.
+                .clipped()
                 // Clicking empty list space (below the rows, on a section
                 // header, between items) clears the selection; rows and their
                 // buttons consume their own taps.
@@ -817,11 +1104,14 @@ struct MainView: View {
             if settings.showBottomCalendar {
                 Divider().opacity(0.45)
                 bottomCalendarContent
+                    .zIndex(1)
                 Divider().opacity(0.45)
             }
             syncFooter
+                .zIndex(1)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .popover(isPresented: Binding(get: { snoozingReminder != nil },
                                       set: { presented in
                                           if !presented { closeSnooze() }
@@ -1196,6 +1486,56 @@ struct MainView: View {
 
     private func toggleHeader() {
         showRecovery = true
+    }
+
+    private func togglePomodoro() {
+        if showPomodoro && pomodoroPresented {
+            collapsePomodoro()
+        } else {
+            expandPomodoro()
+        }
+    }
+
+    private func expandPomodoro() {
+        pomodoroTransitionGeneration &+= 1
+        let generation = pomodoroTransitionGeneration
+        showPomodoro = true
+        pomodoroPresented = false
+        DispatchQueue.main.async {
+            guard generation == self.pomodoroTransitionGeneration,
+                  self.showPomodoro else { return }
+            AppDelegate.instance?.setPopoverHeight(self.expandedPopoverHeight, animated: true)
+            withAnimation(.easeOut(duration: 0.24)) {
+                self.pomodoroPresented = true
+            }
+        }
+    }
+
+    private func collapsePomodoro(animated: Bool = true) {
+        pomodoroTransitionGeneration &+= 1
+        let generation = pomodoroTransitionGeneration
+        guard animated else {
+            pomodoroPresented = false
+            showPomodoro = false
+            resetPopoverHeight(for: generation)
+            return
+        }
+        AppDelegate.instance?.setPopoverHeight(collapsedPopoverHeight, animated: true)
+        withAnimation(.easeIn(duration: 0.18)) {
+            pomodoroPresented = false
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) {
+            guard generation == self.pomodoroTransitionGeneration else { return }
+            self.showPomodoro = false
+            self.resetPopoverHeight(for: generation)
+        }
+    }
+
+    private func resetPopoverHeight(for generation: Int) {
+        DispatchQueue.main.async {
+            guard generation == self.pomodoroTransitionGeneration else { return }
+            AppDelegate.instance?.setPopoverHeight(self.collapsedPopoverHeight)
+        }
     }
 
     private func closePopover() {

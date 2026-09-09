@@ -24,7 +24,9 @@ Type plain English — `pick up dry cleaning tomorrow at 5pm @errands` — and r
 - **Bulk Markdown import** — paste headings and bullets, let local Qwen clean up each reminder, review the results, then create selected items
 - **Editing, bulk create, snooze, tag manager** — power-user tooling, all keyboard-first
 - **Ongoing reminders** — pin reminders to a dedicated section without changing their due date
-- **Search & tags** — `@work`, `#urgent`, `!!`, or the tag dropdown; completed reminders are searchable too
+- **Search & tags** — `@work`, `#urgent`, `!!`, or the tag dropdown; completed reminders are searchable too. Optional Smart Search uses local Ollama embeddings to rank related reminders.
+- **Voice capture and log** — capture spoken reminders, clean them locally, and review the searchable voice log.
+- **Pomodoro timer** — run focus and short-break sessions from the menu bar.
 - **Archive** — restore completed or deleted reminders
 - **Appearance & icon** — Light/Dark/System, plus a customizable menu bar symbol (the fuller checklist glyph is the default), color, and overdue/due-today badge
 
@@ -44,16 +46,19 @@ The installer builds the app, copies it to `/Applications/remr.app`, and launche
 
 ## Optional: Local model features
 
-Enable **Settings → Local Model → Enable local model features** to use Bulk Markdown import.
+Enable **Settings → Local Model → Enable local model features** to use Bulk Markdown import, voice cleanup, and Smart Search. The same section lists installed Ollama models and includes recommended models with installation commands.
 
 Install Ollama from [ollama.com](https://ollama.com/download/mac), or use Homebrew:
 
 ```bash
 brew install ollama
 ollama pull qwen2.5:3b
+ollama pull nomic-embed-text
 ```
 
-Remr starts Ollama when it needs to parse a bulk import. It stops only the Ollama process that it started. If Ollama was already running, remr leaves it running.
+Recommended alternatives are `qwen2.5:1.5b` for lower memory and faster responses, and `llama3.2:3b` for a different general-purpose quality/speed trade-off. `nomic-embed-text` is used for fast semantic Smart Search; choose it in the Embedding model setting. The in-app recommendations popup includes links and commands. These recommendations are models used in my own use and during remr development.
+
+Remr starts Ollama when it needs to parse a bulk import, clean voice input, or run Smart Search. Smart Search embeds each reminder once, caches those vectors in memory, then compares the query locally. Smart Search requires an installed embedding model; select one under **Embedding model** in Settings. It stops only the Ollama process that it started. If Ollama was already running, remr leaves it running.
 
 ## Bulk Markdown import
 

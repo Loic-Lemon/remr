@@ -99,8 +99,13 @@ extension View {
     /// A compact capsule control such as the tag filter button, with a subtle
     /// semantic edge so its pill silhouette remains legible on glass.
     @ViewBuilder
-    func liquidGlassCapsule() -> some View {
-        if #available(macOS 26.0, *) {
+    func liquidGlassCapsule(dimmed: Bool = false) -> some View {
+        if dimmed {
+            self
+                .background(Capsule().fill(Color.black.opacity(0.12)))
+                .overlay(Capsule().stroke(Color.black.opacity(0.18), lineWidth: 0.75))
+                .opacity(0.42)
+        } else if #available(macOS 26.0, *) {
             self
                 .glassEffect(.regular.tint(AppPalette.controlTint), in: Capsule())
                 .overlay(Capsule().stroke(AppPalette.controlStroke, lineWidth: 0.75))
@@ -133,8 +138,13 @@ extension View {
     /// The stroke stays on macOS 26: tinted chips are the one custom control
     /// that needs a scannable edge in both appearances.
     @ViewBuilder
-    func liquidGlassCapsule(tint: Color) -> some View {
-        if #available(macOS 26.0, *) {
+    func liquidGlassCapsule(tint: Color, dimmed: Bool = false) -> some View {
+        if dimmed {
+            self
+                .background(Capsule().fill(Color.black.opacity(0.12)))
+                .overlay(Capsule().stroke(Color.black.opacity(0.18), lineWidth: 0.75))
+                .opacity(0.42)
+        } else if #available(macOS 26.0, *) {
             self
                 .glassEffect(.regular.tint(tint.opacity(0.18)), in: Capsule())
                 .overlay(Capsule().stroke(tint.opacity(0.38), lineWidth: 1))
@@ -178,15 +188,25 @@ extension View {
     /// legible on strongly colored chips. Older systems get the same tinted
     /// translucent fill with a hairline.
     @ViewBuilder
-    func liquidGlassChip(tint: Color? = nil, filled: Bool = false) -> some View {
-        liquidGlassChip(in: Capsule(), tint: tint, filled: filled)
+    func liquidGlassChip(tint: Color? = nil,
+                         filled: Bool = false,
+                         dimmed: Bool = false) -> some View {
+        liquidGlassChip(in: Capsule(), tint: tint, filled: filled, dimmed: dimmed)
     }
 
     /// A small frosted chip with a custom silhouette, e.g. the tiny tag
     /// rectangles in reminder rows.
     @ViewBuilder
-    func liquidGlassChip<S: Shape>(in shape: S, tint: Color? = nil, filled: Bool = false) -> some View {
-        if #available(macOS 26.0, *) {
+    func liquidGlassChip<S: Shape>(in shape: S,
+                                   tint: Color? = nil,
+                                   filled: Bool = false,
+                                   dimmed: Bool = false) -> some View {
+        if dimmed {
+            self
+                .background(shape.fill(Color.black.opacity(0.12)))
+                .overlay(shape.stroke(Color.black.opacity(0.18), lineWidth: 0.75))
+                .opacity(0.42)
+        } else if #available(macOS 26.0, *) {
             let fill = (tint ?? Color.primary).opacity(filled ? 0.55 : 0.18)
             self
                 .glassEffect(.regular.tint(fill), in: shape)

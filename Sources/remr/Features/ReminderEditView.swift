@@ -138,7 +138,7 @@ struct ReminderEditView: View {
                               titleFocusRequest += 1
                           })
         .focused($focusedField, equals: .notes)
-        .frame(minHeight: 34, maxHeight: 110)
+        .frame(height: 76)
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .liquidGlassField(in: RoundedRectangle(cornerRadius: 9))

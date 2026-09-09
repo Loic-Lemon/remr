@@ -15,11 +15,92 @@ private struct TimelineBar {
     let endDay: Date
 }
 
+/// A compact escape hatch for crowded Gantt cells. It rotates the shared
+/// chart to the first hidden lane instead of opening a disconnected list.
+private struct TimelineOverflowButton: View {
+    let bars: [TimelineBar]
+    let onJump: () -> Void
+
+    var body: some View {
+        Button(action: onJump) {
+            Label("\(bars.count) more", systemImage: "arrow.down")
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 3)
+                .background(Color.primary.opacity(0.06), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .help("Show these bars in the Gantt chart")
+    }
+}
+
+/// Shared controls for rotating through the chart's global timeline lanes.
+private struct GanttLaneControls: View {
+    let start: Int
+    let end: Int
+    let total: Int
+    let canMoveUp: Bool
+    let canMoveDown: Bool
+    let onMoveUp: () -> Void
+    let onMoveDown: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Gantt bars")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.primary)
+                Text("\(start)–\(end) of \(total)")
+                    .font(.system(size: 10, weight: .medium, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 2) {
+                laneButton(systemImage: "chevron.up",
+                           help: "Show the previous Gantt bar",
+                           enabled: canMoveUp,
+                           action: onMoveUp)
+                laneButton(systemImage: "chevron.down",
+                           help: "Show the next Gantt bar",
+                           enabled: canMoveDown,
+                           action: onMoveDown)
+            }
+        }
+        .padding(.leading, 9)
+        .padding(.trailing, 4)
+        .padding(.vertical, 4)
+        .background(Color.primary.opacity(0.05), in: Capsule())
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Gantt bars \(start) through \(end) of \(total)")
+    }
+
+    private func laneButton(systemImage: String,
+                            help: String,
+                            enabled: Bool,
+                            action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 9, weight: .bold))
+                .frame(width: 24, height: 22)
+                .background(Color.primary.opacity(enabled ? 0.09 : 0.035), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(enabled ? Color.primary : Color.secondary)
+        .opacity(enabled ? 1 : 0.48)
+        .disabled(!enabled)
+        .help(help)
+        .accessibilityLabel(help)
+    }
+}
+
 /// Snooze/clear callbacks handed to day surfaces for chip context menus.
 struct CalendarActions {
     let onSnooze: (EKReminder, SnoozeChoice) -> Void
     let onCustomSnooze: (EKReminder) -> Void
     let onClearDue: (EKReminder) -> Void
+    let onMoveToList: (EKReminder, String?) -> Void
+    let calendars: [EKCalendar]
 }
 
 /// Grid coordinate space shared by the month/week grids for drag geometry.
@@ -100,7 +181,9 @@ struct CalendarView: View {
                             onOpenDetail: onOpenDetail)
                 }
             }
-            .padding(12)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
             Divider().opacity(0.45)
             footer
         }
@@ -146,7 +229,9 @@ struct CalendarView: View {
     private var actions: CalendarActions {
         CalendarActions(onSnooze: applySnooze,
                         onCustomSnooze: beginCustomSnooze,
-                        onClearDue: clearDue)
+                        onClearDue: clearDue,
+                        onMoveToList: moveToList,
+                        calendars: store.reminderCalendars())
     }
 
     // MARK: - Navigation
@@ -288,6 +373,16 @@ struct CalendarView: View {
 
     private func clearDue(_ reminder: EKReminder) {
         saveSnooze(reminder, until: nil, hasTime: false)
+    }
+
+    private func moveToList(_ reminder: EKReminder, _ calendarIdentifier: String?) {
+        Task { @MainActor in
+            do {
+                try await store.moveToList(reminder, calendarIdentifier: calendarIdentifier)
+            } catch {
+                showError(error.localizedDescription)
+            }
+        }
     }
 
     private func saveCustomSnooze(_ date: Date?, _ hasTime: Bool) {
@@ -522,6 +617,7 @@ private struct MonthGrid: View {
     @State private var cellFrames: [Date: CGRect] = [:]
     @State private var chipFrames: [String: CGRect] = [:]
     @State private var dragging: (id: String, location: CGPoint)?
+    @State private var laneOffset = 0
 
     private var weekdaySymbols: [String] {
         CalendarGridMath.weekdaySymbols(calendar: calendar)
@@ -533,36 +629,55 @@ private struct MonthGrid: View {
         CalendarGridMath.daysInMonth(for: month, calendar: calendar)
     }
 
+    private var rowCount: Int {
+        Int(ceil(Double(leadingBlanks + daysInMonth) / 7.0))
+    }
+
     var body: some View {
-        VStack(spacing: 4) {
-            HStack(spacing: 4) {
-                ForEach(weekdaySymbols, id: \.self) { symbol in
-                    Text(symbol)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity)
+        GeometryReader { proxy in
+            let headerHeight: CGFloat = showTimeline ? 58 : 30
+            let cellHeight = max(104, (proxy.size.height - headerHeight - CGFloat(max(0, rowCount - 1)) * 4 - CGFloat(rowCount) * 8) / CGFloat(rowCount))
+            let laneCapacity = max(1, Int((cellHeight - 28) / 20))
+            let visibleOffset = clampedLaneOffset(capacity: laneCapacity)
+            VStack(spacing: 8) {
+                if showTimeline && !timelineBars.isEmpty {
+                    laneControls(capacity: laneCapacity, offset: visibleOffset)
                 }
-            }
-            ZStack(alignment: .topLeading) {
-                ScrollView(.vertical) {
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 7),
-                              spacing: showTimeline ? 0 : 4) {
-                        ForEach(0..<(leadingBlanks + daysInMonth), id: \.self) { index in
-                            if index < leadingBlanks {
-                                Color.clear
-                                    .frame(height: 104)
-                            } else {
-                                dayCell(index - leadingBlanks + 1)
+                HStack(spacing: 4) {
+                    ForEach(weekdaySymbols, id: \.self) { symbol in
+                        Text(symbol)
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+                ZStack(alignment: .topLeading) {
+                    ScrollView(.vertical) {
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 7),
+                                  spacing: showTimeline ? 0 : 4) {
+                            ForEach(0..<(leadingBlanks + daysInMonth), id: \.self) { index in
+                                if index < leadingBlanks {
+                                    Color.clear
+                                        .frame(height: cellHeight)
+                                } else {
+                                    dayCell(index - leadingBlanks + 1,
+                                            height: cellHeight,
+                                            laneOffset: visibleOffset)
+                                }
                             }
                         }
                     }
+                    .scrollIndicators(.hidden)
+                    dragPreview
                 }
-                dragPreview
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .coordinateSpace(name: calendarGridSpace)
             }
-            .coordinateSpace(name: calendarGridSpace)
         }
         .onPreferenceChange(ChipFramePreference.self) { chipFrames = $0 }
         .onPreferenceChange(CellFramePreference.self) { cellFrames = $0 }
+        .onChange(of: month) { _ in laneOffset = 0 }
+        .onChange(of: showTimeline) { _ in laneOffset = 0 }
     }
 
     private var dropHighlightDate: Date? {
@@ -609,14 +724,44 @@ private struct MonthGrid: View {
         }
     }
 
+    private func clampedLaneOffset(capacity: Int) -> Int {
+        min(max(0, laneOffset), max(0, timelineBars.count - capacity))
+    }
+
+    private func laneControls(capacity: Int, offset: Int) -> some View {
+        GanttLaneControls(start: offset + 1,
+                          end: min(timelineBars.count, offset + capacity),
+                          total: timelineBars.count,
+                          canMoveUp: offset > 0,
+                          canMoveDown: offset + capacity < timelineBars.count,
+                          onMoveUp: { moveLane(by: -1, capacity: capacity) },
+                          onMoveDown: { moveLane(by: 1, capacity: capacity) })
+            .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+
+    private func moveLane(by delta: Int, capacity: Int) {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            laneOffset = min(max(0, laneOffset + delta), max(0, timelineBars.count - capacity))
+        }
+    }
+
+    private func moveLane(to offset: Int, capacity: Int) {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            laneOffset = min(max(0, offset), max(0, timelineBars.count - capacity))
+        }
+    }
+
     /// Chips for the day, or full-bleed timeline segments when the overlay
     /// is on (extracted so the cell body stays type-checkable).
     @ViewBuilder
-    private func dayItems(date: Date, items: [EKReminder]) -> some View {
+    private func dayItems(date: Date, items: [EKReminder], height: CGFloat, laneOffset: Int) -> some View {
         if showTimeline {
-            // Render every lane, including an empty placeholder. Without the
-            // placeholders a reminder changes vertical position between days.
-            ForEach(timelineBars, id: \.reminder.calendarItemIdentifier) { bar in
+            let maxBars = max(1, Int((height - 28) / 20))
+            let activeBars = timelineBars.filter { $0.startDay <= date && date <= $0.endDay }
+            let visibleBars = Array(timelineBars.dropFirst(laneOffset).prefix(maxBars))
+            // Keep the same global lane window across every day. Crowded cells
+            // can jump the whole chart to their first hidden lane.
+            ForEach(visibleBars, id: \.reminder.calendarItemIdentifier) { bar in
                 if bar.startDay <= date && date <= bar.endDay {
                     ReminderChip(reminder: bar.reminder,
                                  color: chipColor(for: bar.reminder),
@@ -630,6 +775,15 @@ private struct MonthGrid: View {
                     Color.clear.frame(height: 18)
                 }
             }
+            let visibleIDs = Set(visibleBars.map(\.reminder.calendarItemIdentifier))
+            let overflow = activeBars.filter { !visibleIDs.contains($0.reminder.calendarItemIdentifier) }
+            if !overflow.isEmpty,
+               let firstHidden = overflow.first,
+               let firstHiddenIndex = timelineBars.firstIndex(where: { $0.reminder.calendarItemIdentifier == firstHidden.reminder.calendarItemIdentifier }) {
+                TimelineOverflowButton(bars: overflow) {
+                    moveLane(to: firstHiddenIndex, capacity: maxBars)
+                }
+            }
         } else {
             ForEach(items.prefix(4), id: \.calendarItemIdentifier) { reminder in
                 ReminderChip(reminder: reminder, color: chipColor(for: reminder), actions: actions,
@@ -639,7 +793,7 @@ private struct MonthGrid: View {
         }
     }
 
-    private func dayCell(_ day: Int) -> some View {
+    private func dayCell(_ day: Int, height: CGFloat, laneOffset: Int) -> some View {
         let date = calendar.date(byAdding: .day, value: day - 1, to: month)!
         let items = buckets[date] ?? []
         let isToday = calendar.isDateInToday(date)
@@ -649,17 +803,25 @@ private struct MonthGrid: View {
                 .font(.caption2)
                 .fontWeight(isToday ? .semibold : .regular)
                 .foregroundStyle(isToday ? Color.accentColor : Color.primary)
-            dayItems(date: date, items: items)
+            dayItems(date: date, items: items, height: height, laneOffset: laneOffset)
             Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, minHeight: 104, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: height, maxHeight: height, alignment: .topLeading)
         .padding(4)
         .background {
-            if isToday || isDropTarget {
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .strokeBorder(Color.accentColor.opacity(isDropTarget ? 0.9 : 0.6),
-                                  lineWidth: isDropTarget ? 2 : 1)
-            }
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.primary.opacity(isToday ? 0.055 : 0.025))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.75)
+                }
+                .overlay {
+                    if isToday || isDropTarget {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(Color.accentColor.opacity(isDropTarget ? 0.9 : 0.65),
+                                          lineWidth: isDropTarget ? 2 : 1.2)
+                    }
+                }
         }
         .contentShape(Rectangle())
         .onTapGesture {
@@ -688,31 +850,45 @@ private struct WeekGrid: View {
     @State private var cellFrames: [Date: CGRect] = [:]
     @State private var chipFrames: [String: CGRect] = [:]
     @State private var dragging: (id: String, location: CGPoint)?
+    @State private var laneOffset = 0
 
     var body: some View {
-        VStack(spacing: 4) {
-            HStack(spacing: 4) {
-                ForEach(CalendarGridMath.weekdaySymbols(calendar: calendar), id: \.self) { symbol in
-                    Text(symbol)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity)
+        GeometryReader { proxy in
+            let headerHeight: CGFloat = showTimeline ? 58 : 30
+            let columnHeight = max(300, proxy.size.height - headerHeight)
+            let laneCapacity = max(1, Int((columnHeight - 28) / 20))
+            let visibleOffset = clampedLaneOffset(capacity: laneCapacity)
+            VStack(spacing: 8) {
+                if showTimeline && !timelineBars.isEmpty {
+                    laneControls(capacity: laneCapacity, offset: visibleOffset)
                 }
-            }
-            ZStack(alignment: .topLeading) {
-                ScrollView(.vertical) {
-                    HStack(spacing: showTimeline ? 0 : 4) {
-                        ForEach(0..<7, id: \.self) { i in
-                            dayColumn(i)
-                        }
+                HStack(spacing: 4) {
+                    ForEach(CalendarGridMath.weekdaySymbols(calendar: calendar), id: \.self) { symbol in
+                        Text(symbol)
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
                     }
                 }
-                dragPreview
+                ZStack(alignment: .topLeading) {
+                    ScrollView(.vertical) {
+                        HStack(spacing: showTimeline ? 0 : 4) {
+                            ForEach(0..<7, id: \.self) { i in
+                                dayColumn(i, height: columnHeight, laneOffset: visibleOffset)
+                            }
+                        }
+                    }
+                    .scrollIndicators(.hidden)
+                    dragPreview
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .coordinateSpace(name: calendarGridSpace)
             }
-            .coordinateSpace(name: calendarGridSpace)
         }
         .onPreferenceChange(ChipFramePreference.self) { chipFrames = $0 }
         .onPreferenceChange(CellFramePreference.self) { cellFrames = $0 }
+        .onChange(of: weekStart) { _ in laneOffset = 0 }
+        .onChange(of: showTimeline) { _ in laneOffset = 0 }
     }
 
     private var dropHighlightDate: Date? {
@@ -759,12 +935,42 @@ private struct WeekGrid: View {
         }
     }
 
+    private func clampedLaneOffset(capacity: Int) -> Int {
+        min(max(0, laneOffset), max(0, timelineBars.count - capacity))
+    }
+
+    private func laneControls(capacity: Int, offset: Int) -> some View {
+        GanttLaneControls(start: offset + 1,
+                          end: min(timelineBars.count, offset + capacity),
+                          total: timelineBars.count,
+                          canMoveUp: offset > 0,
+                          canMoveDown: offset + capacity < timelineBars.count,
+                          onMoveUp: { moveLane(by: -1, capacity: capacity) },
+                          onMoveDown: { moveLane(by: 1, capacity: capacity) })
+            .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+
+    private func moveLane(by delta: Int, capacity: Int) {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            laneOffset = min(max(0, laneOffset + delta), max(0, timelineBars.count - capacity))
+        }
+    }
+
+    private func moveLane(to offset: Int, capacity: Int) {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            laneOffset = min(max(0, offset), max(0, timelineBars.count - capacity))
+        }
+    }
+
     /// Chips for the column, or full-bleed timeline segments when the
     /// overlay is on (extracted so the column body stays type-checkable).
     @ViewBuilder
-    private func columnItems(date: Date, items: [EKReminder]) -> some View {
+    private func columnItems(date: Date, items: [EKReminder], height: CGFloat, laneOffset: Int) -> some View {
         if showTimeline {
-            ForEach(timelineBars, id: \.reminder.calendarItemIdentifier) { bar in
+            let maxBars = max(1, Int((height - 28) / 20))
+            let activeBars = timelineBars.filter { $0.startDay <= date && date <= $0.endDay }
+            let visibleBars = Array(timelineBars.dropFirst(laneOffset).prefix(maxBars))
+            ForEach(visibleBars, id: \.reminder.calendarItemIdentifier) { bar in
                 if bar.startDay <= date && date <= bar.endDay {
                     ReminderChip(reminder: bar.reminder,
                                  color: chipColor(for: bar.reminder),
@@ -778,6 +984,15 @@ private struct WeekGrid: View {
                     Color.clear.frame(height: 18)
                 }
             }
+            let visibleIDs = Set(visibleBars.map(\.reminder.calendarItemIdentifier))
+            let overflow = activeBars.filter { !visibleIDs.contains($0.reminder.calendarItemIdentifier) }
+            if !overflow.isEmpty,
+               let firstHidden = overflow.first,
+               let firstHiddenIndex = timelineBars.firstIndex(where: { $0.reminder.calendarItemIdentifier == firstHidden.reminder.calendarItemIdentifier }) {
+                TimelineOverflowButton(bars: overflow) {
+                    moveLane(to: firstHiddenIndex, capacity: maxBars)
+                }
+            }
         } else {
             ForEach(items.prefix(5), id: \.calendarItemIdentifier) { reminder in
                 ReminderChip(reminder: reminder, color: chipColor(for: reminder), actions: actions,
@@ -787,7 +1002,7 @@ private struct WeekGrid: View {
         }
     }
 
-    private func dayColumn(_ i: Int) -> some View {
+    private func dayColumn(_ i: Int, height: CGFloat, laneOffset: Int) -> some View {
         let date = calendar.date(byAdding: .day, value: i, to: weekStart)!
         let items = buckets[date] ?? []
         let isToday = calendar.isDateInToday(date)
@@ -797,17 +1012,25 @@ private struct WeekGrid: View {
             Text("\(symbol) \(calendar.component(.day, from: date))")
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(isToday ? Color.accentColor : Color.primary)
-            columnItems(date: date, items: items)
+            columnItems(date: date, items: items, height: height, laneOffset: laneOffset)
             Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, minHeight: 300, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: height, maxHeight: height, alignment: .topLeading)
         .padding(4)
         .background {
-            if isToday || isDropTarget {
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .strokeBorder(Color.accentColor.opacity(isDropTarget ? 0.9 : 0.6),
-                                  lineWidth: isDropTarget ? 2 : 1)
-            }
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.primary.opacity(isToday ? 0.055 : 0.025))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.75)
+                }
+                .overlay {
+                    if isToday || isDropTarget {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(Color.accentColor.opacity(isDropTarget ? 0.9 : 0.65),
+                                          lineWidth: isDropTarget ? 2 : 1.2)
+                    }
+                }
         }
         .contentShape(Rectangle())
         .onTapGesture {
@@ -845,6 +1068,7 @@ private struct DayList: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func row(for reminder: EKReminder) -> some View {
@@ -993,7 +1217,16 @@ func snoozeMenuItems(for reminder: EKReminder, actions: CalendarActions) -> some
     Divider()
     Button { actions.onCustomSnooze(reminder) } label: { Label("Pick date/time…", systemImage: "calendar.badge.clock") }
     Button { actions.onClearDue(reminder) } label: { Label("Clear due date", systemImage: "xmark.circle") }
+    Divider()
+    Menu("Move to List") {
+        Button("Default list") { actions.onMoveToList(reminder, nil) }
+        Divider()
+        ForEach(actions.calendars, id: \.calendarIdentifier) { calendar in
+            Button(calendar.title) { actions.onMoveToList(reminder, calendar.calendarIdentifier) }
+        }
+    }
 }
+
 
 /// The (i) popover listing what the calendar can do.
 private struct CalendarHelpView: View {

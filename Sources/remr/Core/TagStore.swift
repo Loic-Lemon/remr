@@ -71,11 +71,9 @@ final class TagStore: ObservableObject {
         names[index % names.count]
     }
 
-    /// Black or white depending on the chip's fill, for readable label text.
-    static func textColor(on nsColor: NSColor) -> Color {
-        let c = nsColor.usingColorSpace(.sRGB) ?? nsColor
-        let luminance = 0.299 * c.redComponent + 0.587 * c.greenComponent + 0.114 * c.blueComponent
-        return luminance > 0.6 ? .black : .white
+    /// Tag chips always use white text for a consistent badge appearance.
+    static func textColor(on _: NSColor) -> Color {
+        .white
     }
 
     /// FNV-1a-ish; stable across launches and processes.

@@ -22,6 +22,37 @@ struct SettingsView: View {
     /// otherwise the block at `index` is replaced.
     @State private var capture: (action: BindableAction, index: Int?)?
     @State private var showFeatureInventory = false
+    @State private var voiceInputDevices = VoiceInputDevices.available()
+    @State private var ollamaModels: [OllamaModelInfo] = []
+    @State private var ollamaEmbeddingModels: [OllamaModelInfo] = []
+    @State private var ollamaModelError: String?
+    @State private var ollamaEmbeddingModelError: String?
+    @State private var showOllamaRecommendations = false
+
+    private func loadOllamaModels() {
+        guard settings.ollamaEnabled else {
+            ollamaModels = []
+            ollamaEmbeddingModels = []
+            ollamaModelError = nil
+            ollamaEmbeddingModelError = nil
+            return
+        }
+        Task {
+            do {
+                let models = try await OllamaReminderParser().availableModels()
+                ollamaModels = models.filter { !$0.isEmbedding }
+                ollamaEmbeddingModels = models.filter(\.isEmbedding)
+                ollamaModelError = models.isEmpty ? "No Ollama models found." : nil
+                ollamaEmbeddingModelError = ollamaEmbeddingModels.isEmpty ?
+                    "No embedding models found. Install nomic-embed-text with Ollama." : nil
+            } catch {
+                ollamaModels = []
+                ollamaEmbeddingModels = []
+                ollamaModelError = error.localizedDescription
+                ollamaEmbeddingModelError = error.localizedDescription
+            }
+        }
+    }
 
     /// The combo a row displays: the draft when one exists, else the saved one.
     private func combo(for action: BindableAction) -> KeyCombo {
@@ -125,6 +156,26 @@ struct SettingsView: View {
 
                 Section {
                     VStack(alignment: .leading, spacing: 10) {
+                        Toggle("Compact items", isOn: Binding(
+                            get: { settings.compactItems },
+                            set: { settings.setCompactItems($0) }
+                        ))
+                        .toggleStyle(.switch)
+                        .accessibilityLabel("Compact items")
+                        Text("Reduces spacing and rearranges reminder details so more reminders fit in the list.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    .padding(.bottom, 16)
+                } header: {
+                    settingsSubheading("List")
+                }
+
+                Section {
+                    VStack(alignment: .leading, spacing: 10) {
                         Toggle("Show week calendar", isOn: Binding(
                             get: { settings.showBottomCalendar },
                             set: { settings.setShowBottomCalendar($0) }
@@ -145,13 +196,13 @@ struct SettingsView: View {
 
                 Section {
                     VStack(alignment: .leading, spacing: 10) {
-                        Toggle("Enable local model features", isOn: Binding(
-                            get: { settings.ollamaEnabled },
-                            set: { settings.setOllamaEnabled($0) }
+                        Toggle("Enable Pomodoro timer", isOn: Binding(
+                            get: { settings.pomodoroEnabled },
+                            set: { settings.setPomodoroEnabled($0) }
                         ))
                         .toggleStyle(.switch)
-                        .accessibilityLabel("Enable local model features")
-                        Text("Uses Ollama and qwen2.5:3b on this Mac to interpret Markdown bulk imports. Install the model before enabling this option.")
+                        .accessibilityLabel("Enable Pomodoro timer")
+                        Text("Adds a focus timer below the sync status. Completed sessions can appear in a floating panel above other apps.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -160,7 +211,122 @@ struct SettingsView: View {
                     .padding(.top, 12)
                     .padding(.bottom, 16)
                 } header: {
+                    settingsSubheading("Pomodoro")
+                }
+
+                Section {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Toggle("Enable local model features", isOn: Binding(
+                            get: { settings.ollamaEnabled },
+                            set: { settings.setOllamaEnabled($0) }
+                        ))
+                        .toggleStyle(.switch)
+                        .accessibilityLabel("Enable local model features")
+                        Text("Uses Ollama on this Mac for bulk import, voice cleanup, and Smart Search. Requests stay on this Mac.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Picker("Model", selection: Binding(
+                            get: { settings.ollamaModel },
+                            set: { settings.setOllamaModel($0) }
+                        )) {
+                            if ollamaModels.isEmpty {
+                                Text(settings.ollamaModel).tag(settings.ollamaModel)
+                            }
+                            ForEach(ollamaModels) { model in
+                                Text(model.summary.isEmpty ? model.name : "\(model.name) — \(model.summary)")
+                                    .tag(model.name)
+                            }
+                        }
+                        .disabled(!settings.ollamaEnabled || ollamaModels.isEmpty)
+
+                        Picker("Embedding model", selection: Binding(
+                            get: { settings.ollamaEmbeddingModel },
+                            set: { settings.setOllamaEmbeddingModel($0) }
+                        )) {
+                            if ollamaEmbeddingModels.isEmpty {
+                                Text(settings.ollamaEmbeddingModel).tag(settings.ollamaEmbeddingModel)
+                            }
+                            ForEach(ollamaEmbeddingModels) { model in
+                                Text(model.summary.isEmpty ? model.name : "\(model.name) — \(model.summary)")
+                                    .tag(model.name)
+                            }
+                        }
+                        .disabled(!settings.ollamaEnabled || ollamaEmbeddingModels.isEmpty)
+                        .help("Embedding model used by Smart Search")
+
+                        HStack(spacing: 12) {
+                            Button("Refresh models") {
+                                loadOllamaModels()
+                            }
+                            Button("Recommended models & setup") {
+                                showOllamaRecommendations = true
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.accentColor)
+                        .font(.caption)
+                        .popover(isPresented: $showOllamaRecommendations, arrowEdge: .bottom) {
+                            OllamaRecommendationsView()
+                        }
+                        if let ollamaModelError {
+                            Text(ollamaModelError)
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+                        if let ollamaEmbeddingModelError {
+                            Text(ollamaEmbeddingModelError)
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    .padding(.bottom, 16)
+                } header: {
                     settingsSubheading("Local Model")
+                }
+                .onAppear { loadOllamaModels() }
+                .onChange(of: settings.ollamaEnabled) { _ in loadOllamaModels() }
+                .onChange(of: settings.ollamaModel) { _ in loadOllamaModels() }
+
+                Section {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label("Voice dictation stays on-device", systemImage: "lock.shield")
+                            .font(.callout.weight(.medium))
+                        Picker("Microphone", selection: Binding(
+                            get: { settings.voiceInputDeviceID ?? "" },
+                            set: { settings.setVoiceInputDeviceID($0.isEmpty ? nil : $0) }
+                        )) {
+                            Text("System default").tag("")
+                            ForEach(voiceInputDevices) { device in
+                                Text(device.name).tag(device.id)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        Button("Refresh microphones") {
+                            voiceInputDevices = VoiceInputDevices.available()
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.accentColor)
+                        .font(.caption)
+                        if let savedID = settings.voiceInputDeviceID, !savedID.isEmpty,
+                           !voiceInputDevices.contains(where: { $0.id == savedID }) {
+                            Text("Saved microphone not found — recordings fall back to System default until you pick another.")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+                        Text("Voice dictation requires Apple on-device speech recognition. If your Mac or language does not support it, remr stops instead of sending audio to a remote service. Audio is never saved.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    .padding(.bottom, 16)
+                    .onAppear { voiceInputDevices = VoiceInputDevices.available() }
+                } header: {
+                    settingsSubheading("Voice Dictation")
                 }
 
                 Section {
@@ -244,6 +410,7 @@ struct SettingsView: View {
             capture = nil
             settings.isCapturing = false
             showFeatureInventory = false
+            showOllamaRecommendations = false
         }
         .liquidGlassGrouping()
     }
@@ -419,6 +586,60 @@ struct SettingsView: View {
         } else {
             errors = result
         }
+    }
+}
+
+private struct OllamaRecommendationsView: View {
+    private struct Recommendation: Identifiable {
+        let id: String
+        let name: String
+        let summary: String
+        let install: String
+        let url: URL
+    }
+
+    private let recommendations = [
+        Recommendation(id: "qwen2.5:3b", name: "qwen2.5:3b",
+                       summary: "Balanced quality and speed. Current remr default.",
+                       install: "ollama pull qwen2.5:3b",
+                       url: URL(string: "https://ollama.com/library/qwen2.5:3b")!),
+        Recommendation(id: "qwen2.5:1.5b", name: "qwen2.5:1.5b",
+                       summary: "Fastest and lightest. Lower quality on nuanced searches.",
+                       install: "ollama pull qwen2.5:1.5b",
+                       url: URL(string: "https://ollama.com/library/qwen2.5:1.5b")!),
+        Recommendation(id: "llama3.2:3b", name: "llama3.2:3b",
+                       summary: "Good general quality. Similar speed, different reasoning style.",
+                       install: "ollama pull llama3.2:3b",
+                       url: URL(string: "https://ollama.com/library/llama3.2:3b")!)
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Recommended Ollama models")
+                .font(.headline)
+            Text("These recommendations are models used in my own use and during remr development.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            ForEach(recommendations) { model in
+                VStack(alignment: .leading, spacing: 4) {
+                    Link(model.name, destination: model.url)
+                        .font(.callout.weight(.semibold))
+                    Text(model.summary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(model.install)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                }
+            }
+            Text("Install Ollama from ollama.com, then run one of the commands above. Use Refresh models after installation.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16)
+        .frame(width: 330)
     }
 }
 

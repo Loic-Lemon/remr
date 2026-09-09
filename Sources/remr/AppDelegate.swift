@@ -33,6 +33,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var quickAddHosting: NSHostingController<AnyView>?
     private var calendarWindow: NSPanel?
     private var calendarHosting: NSHostingController<AnyView>?
+    private var pomodoroCompletionWindow: NSPanel?
+    private var pomodoroCompletionHosting: NSHostingController<AnyView>?
+    private var voiceDictationWindow: NSPanel?
+    private var voiceDictationHosting: NSHostingController<AnyView>?
+    private lazy var voiceCoordinator: VoiceDictationCoordinator = {
+        let transcriber = AppleSpeechTranscriber(inputDeviceID: SettingsStore.shared.voiceInputDeviceID)
+        let coordinator = VoiceDictationCoordinator(transcriber: transcriber)
+        coordinator.onCompleted = { [weak self] mode, transcript, cleaned in
+            self?.handleVoiceCompletion(mode: mode, transcript: transcript, cleaned: cleaned)
+        }
+        return coordinator
+    }()
     private var mouseDownGlobalMonitor: Any?
     private var mouseDownLocalMonitor: Any?
     private var quickAddCloseGeneration = 0
@@ -40,16 +52,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var toggleHotKeyRef: EventHotKeyRef?
     private var quickAddHotKeyRef: EventHotKeyRef?
     private var calendarHotKeyRef: EventHotKeyRef?
+    private var voiceVerifyHotKeyRef: EventHotKeyRef?
+    private var voiceLogHotKeyRef: EventHotKeyRef?
     private let hotKeySignature: OSType = 0x72656D72 // "remr"
     private var currentToggleHotkeyCombo: KeyCombo?
     private var currentQuickAddHotkeyCombo: KeyCombo?
     private var currentCalendarHotkeyCombo: KeyCombo?
+    private var currentVoiceVerifyHotkeyCombo: KeyCombo?
+    private var currentVoiceLogHotkeyCombo: KeyCombo?
     private var hotKeyErrors: [BindableAction: String] = [:]
     private var settingsCancellables: Set<AnyCancellable> = []
     func applicationWillTerminate(_ notification: Notification) {
         if let toggleHotKeyRef { UnregisterEventHotKey(toggleHotKeyRef) }
         if let quickAddHotKeyRef { UnregisterEventHotKey(quickAddHotKeyRef) }
         if let calendarHotKeyRef { UnregisterEventHotKey(calendarHotKeyRef) }
+        if let voiceVerifyHotKeyRef { UnregisterEventHotKey(voiceVerifyHotKeyRef) }
+        if let voiceLogHotKeyRef { UnregisterEventHotKey(voiceLogHotKeyRef) }
+        voiceCoordinator.cancel()
         if let mouseDownGlobalMonitor {
             NSEvent.removeMonitor(mouseDownGlobalMonitor)
             self.mouseDownGlobalMonitor = nil
@@ -80,6 +99,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case 1: app.togglePopover()
                 case 2: app.showQuickAdd()
                 case 3: app.showCalendar()
+                case 4 where SettingsStore.shared.ollamaEnabled: app.toggleVoice(mode: .verify)
+                case 5 where SettingsStore.shared.ollamaEnabled: app.toggleVoice(mode: .log)
                 default: break
                 }
             }
@@ -88,10 +109,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         reapplyHotKeys()
     }
 
-    private func reapplyHotKeys(bindings: [BindableAction: KeyCombo]? = nil) {
+    private func reapplyHotKeys(bindings: [BindableAction: KeyCombo]? = nil,
+                                 localModelEnabled: Bool? = nil) {
         reapplyHotKey(.togglePopover, bindings: bindings)
         reapplyHotKey(.quickAdd, bindings: bindings)
         reapplyHotKey(.openCalendar, bindings: bindings)
+        let voiceBindings: [BindableAction: KeyCombo]? =
+            (localModelEnabled ?? SettingsStore.shared.ollamaEnabled)
+            ? bindings
+            : [.voiceVerify: KeyCombo([]), .voiceLog: KeyCombo([])]
+        reapplyHotKey(.voiceVerify, bindings: voiceBindings)
+        reapplyHotKey(.voiceLog, bindings: voiceBindings)
     }
 
     /// Re-register one global binding without disturbing the other action's
@@ -116,6 +144,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .openCalendar:
             current = currentCalendarHotkeyCombo
             ref = calendarHotKeyRef
+        case .voiceVerify:
+            current = currentVoiceVerifyHotkeyCombo
+            ref = voiceVerifyHotKeyRef
+        case .voiceLog:
+            current = currentVoiceLogHotkeyCombo
+            ref = voiceLogHotKeyRef
         default:
             return
         }
@@ -134,6 +168,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let ref { UnregisterEventHotKey(ref) }
             calendarHotKeyRef = nil
             currentCalendarHotkeyCombo = nil
+        case .voiceVerify:
+            if let ref { UnregisterEventHotKey(ref) }
+            voiceVerifyHotKeyRef = nil
+            currentVoiceVerifyHotkeyCombo = nil
+        case .voiceLog:
+            if let ref { UnregisterEventHotKey(ref) }
+            voiceLogHotKeyRef = nil
+            currentVoiceLogHotkeyCombo = nil
         default:
             return
         }
@@ -170,6 +212,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .togglePopover: return 1
         case .quickAdd: return 2
         case .openCalendar: return 3
+        case .voiceVerify: return 4
+        case .voiceLog: return 5
         default: return 0
         }
     }
@@ -185,6 +229,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .openCalendar:
             currentCalendarHotkeyCombo = combo
             calendarHotKeyRef = ref
+        case .voiceVerify:
+            currentVoiceVerifyHotkeyCombo = combo
+            voiceVerifyHotKeyRef = ref
+        case .voiceLog:
+            currentVoiceLogHotkeyCombo = combo
+            voiceLogHotKeyRef = ref
         default: break
         }
     }
@@ -253,6 +303,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             rootView: ContentView()
                 .environmentObject(store)
                 .environmentObject(SettingsStore.shared)
+                .environmentObject(VoiceLogStore.shared)
                 .remrAppearance(using: SettingsStore.shared)
         )
         // Warm the first SwiftUI layout now, while the app is still settling
@@ -298,8 +349,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] bindings in self?.reapplyHotKeys(bindings: bindings) }
             .store(in: &settingsCancellables)
 
+        SettingsStore.shared.$ollamaEnabled
+            .dropFirst()
+            .sink { [weak self] enabled in
+                self?.reapplyHotKeys(localModelEnabled: enabled)
+            }
+            .store(in: &settingsCancellables)
+
         SettingsStore.shared.$appearance
             .sink { [weak self] appearance in self?.applyAppearance(appearance) }
+            .store(in: &settingsCancellables)
+
+        PomodoroTimerStore.shared.$completion
+            .compactMap { $0 }
+            .sink { [weak self] completion in
+                self?.showPomodoroCompletion(completion)
+            }
+            .store(in: &settingsCancellables)
+        if SettingsStore.shared.pomodoroEnabled,
+           let completion = PomodoroTimerStore.shared.completion {
+            showPomodoroCompletion(completion)
+        }
+
+        SettingsStore.shared.$pomodoroEnabled
+            .dropFirst()
+            .filter { !$0 }
+            .sink { [weak self] _ in
+                PomodoroTimerStore.shared.pause()
+                PomodoroTimerStore.shared.clearCompletion()
+                self?.closePomodoroCompletion()
+            }
             .store(in: &settingsCancellables)
 
         // Any of the icon settings re-renders the status item. The
@@ -337,6 +416,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         serviceWindow?.appearance = nsAppearance
         quickAddWindow?.appearance = nsAppearance
         calendarWindow?.appearance = nsAppearance
+        pomodoroCompletionWindow?.appearance = nsAppearance
+        voiceDictationWindow?.appearance = nsAppearance
     }
 
 
@@ -384,6 +465,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Showing at full size and animating only the window alpha is a
         // single cheap layer composite, and it doubles as cover for the
         // initial list fill that lands right after show().
+        let collapsedHeight = 600 + (SettingsStore.shared.pomodoroEnabled ? 36 : 0)
+        popover.contentSize = NSSize(width: 400, height: collapsedHeight)
         popover.animates = false
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         // macOS 26's NSPopover supplies the native Liquid Glass surface.
@@ -432,6 +515,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// close transition.
     func closePopover() {
         guard popover.isShown, let window = popover.contentViewController?.view.window else { return }
+        NotificationCenter.default.post(name: .remrPopoverClosing, object: nil)
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.12
             context.allowsImplicitAnimation = true
@@ -546,6 +630,190 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 window.alphaValue = 1
             }
         }
+    }
+
+    func toggleVoice(mode: VoiceDictationMode) {
+        voiceCoordinator.configure(inputDeviceID: SettingsStore.shared.voiceInputDeviceID)
+        switch voiceCoordinator.state {
+        case .recording:
+            voiceCoordinator.stop()
+            if voiceCoordinator.mode == .log { closeVoice() }
+        case .processing:
+            break
+        case .idle, .failed:
+            showVoicePanel(mode: mode)
+            voiceCoordinator.start(mode: mode)
+        }
+    }
+
+    private func showVoicePanel(mode: VoiceDictationMode) {
+        if popover.isShown { closePopover() }
+        let root = AnyView(
+            VoiceDictationView(coordinator: voiceCoordinator,
+                               onCancel: { [weak self] in self?.cancelVoice() })
+                .remrAppearance(using: SettingsStore.shared)
+        )
+        let window: NSPanel
+        if let existing = voiceDictationWindow, let hosting = voiceDictationHosting {
+            hosting.rootView = root
+            window = existing
+        } else {
+            let hosting = NSHostingController(rootView: root)
+            let panel = FloatingKeyPanel(contentViewController: hosting)
+            panel.styleMask = [.borderless]
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+            panel.hasShadow = false
+            panel.isReleasedWhenClosed = false
+            panel.isFloatingPanel = true
+            panel.level = .floating
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            panel.hidesOnDeactivate = false
+            voiceDictationHosting = hosting
+            voiceDictationWindow = panel
+            window = panel
+        }
+        window.setContentSize(NSSize(width: 360, height: 245))
+        window.alphaValue = 1
+        if let button = statusItem?.button,
+           let screenRect = button.window?.convertToScreen(button.bounds) {
+            let frame = window.frame
+            window.setFrameOrigin(NSPoint(x: screenRect.midX - frame.width / 2,
+                                          y: screenRect.minY - frame.height - 8))
+        } else {
+            window.center()
+        }
+        applyAppearance(SettingsStore.shared.appearance)
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    private func cancelVoice() {
+        voiceCoordinator.cancel()
+        voiceDictationWindow?.orderOut(nil)
+    }
+
+    private func closeVoice() {
+        voiceDictationWindow?.orderOut(nil)
+    }
+
+    private func handleVoiceCompletion(mode: VoiceDictationMode,
+                                       transcript: String,
+                                       cleaned: String) {
+        closeVoice()
+        if mode == .log {
+            VoiceLogStore.shared.append(transcript: transcript, cleaned: cleaned)
+        } else {
+            showBulkInPopover(text: cleaned)
+        }
+    }
+
+    /// Opens cleaned text in the main popover's verify-and-edit list — the
+    /// same BulkReminderPreview bulk import uses — instead of a second window.
+    func showBulkInPopover(text: String) {
+        voiceDictationWindow?.orderOut(nil)
+        if quickAddWindow?.isVisible == true { closeQuickAdd() }
+        if calendarWindow?.isVisible == true { closeCalendar() }
+        if !popover.isShown, let button = statusItem.button {
+            showPopover(relativeTo: button)
+        } else {
+            store.refresh()
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        NotificationCenter.default.post(name: .remrShowBulkPreview,
+                                        object: nil,
+                                        userInfo: ["text": text])
+    }
+
+    /// Resizes the inline Pomodoro section while keeping the popover anchored.
+    func setPopoverHeight(_ height: CGFloat, animated: Bool = false) {
+        let window = popover.contentViewController?.view.window
+        let centerX = window?.frame.midX
+        let size = NSSize(width: popover.contentSize.width,
+                          height: max(0, height))
+
+        let applyOrigin = {
+            guard let window, let centerX else { return }
+            let frame = window.frame
+            window.setFrameOrigin(NSPoint(x: centerX - frame.width / 2,
+                                          y: frame.minY))
+        }
+
+        if animated {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.24
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                window?.animator().setContentSize(size)
+            } completionHandler: {
+                applyOrigin()
+            }
+        } else {
+            popover.contentSize = size
+            applyOrigin()
+        }
+    }
+
+    private func showPomodoroCompletion(_ completion: PomodoroCompletion) {
+        let timer = PomodoroTimerStore.shared
+        let rootView = AnyView(
+            PomodoroCompletionView(
+                phase: completion.phase,
+                nextPhase: timer.nextPhase,
+                onStartNext: { [weak self] in
+                    timer.startNextPhase()
+                    self?.closePomodoroCompletion()
+                },
+                onDismiss: { [weak self] in
+                    timer.clearCompletion()
+                    self?.closePomodoroCompletion()
+                }
+            )
+            .remrAppearance(using: SettingsStore.shared)
+        )
+
+        let window: NSPanel
+        if let existingWindow = pomodoroCompletionWindow,
+           let hosting = pomodoroCompletionHosting {
+            hosting.rootView = rootView
+            window = existingWindow
+        } else {
+            let hosting = NSHostingController(rootView: rootView)
+            let newWindow = FloatingKeyPanel(contentViewController: hosting)
+            newWindow.styleMask = [.borderless]
+            newWindow.isOpaque = false
+            newWindow.backgroundColor = .clear
+            newWindow.hasShadow = false
+            newWindow.isReleasedWhenClosed = false
+            newWindow.isFloatingPanel = true
+            newWindow.level = .floating
+            newWindow.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            newWindow.hidesOnDeactivate = false
+            newWindow.becomesKeyOnlyIfNeeded = true
+            pomodoroCompletionHosting = hosting
+            pomodoroCompletionWindow = newWindow
+            window = newWindow
+        }
+
+        window.setContentSize(NSSize(width: 376, height: 220))
+        window.alphaValue = 1
+        let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+        if let screen {
+            let visibleFrame = screen.visibleFrame
+            let frame = window.frame
+            window.setFrameOrigin(NSPoint(x: visibleFrame.maxX - frame.width - 24,
+                                          y: visibleFrame.maxY - frame.height - 24))
+        } else {
+            window.center()
+        }
+        applyAppearance(SettingsStore.shared.appearance)
+        NSSound(named: NSSound.Name("Tink"))?.play()
+        window.orderFrontRegardless()
+    }
+
+    private func closePomodoroCompletion() {
+        pomodoroCompletionWindow?.orderOut(nil)
     }
 
     /// Opens the calendar view in a reusable centered floating panel.
@@ -667,11 +935,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Service window
 
     /// Brings up (or reuses) the "New Reminders" window with a bulk preview.
-    func showBulkPreview(text: String) {
+    func showBulkPreview(text: String, allowLocationLookup: Bool = true) {
+        let preview = BulkReminderPreview(text: text,
+                                           allowLocationLookup: allowLocationLookup,
+                                           onCancel: { self.serviceWindow?.close() },
+                                           onDone: { self.serviceWindow?.close() })
         let rootView = AnyView(
-            BulkReminderPreview(text: text,
-                                onCancel: { self.serviceWindow?.close() },
-                                onDone: { self.serviceWindow?.close() })
+            preview
                 .environmentObject(store)
                 .environmentObject(SettingsStore.shared)
                 .remrAppearance(using: SettingsStore.shared)

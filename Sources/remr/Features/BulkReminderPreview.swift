@@ -148,6 +148,7 @@ struct BulkReminderPreview: View {
     @EnvironmentObject private var store: ReminderStore
 
     let text: String
+    let allowLocationLookup: Bool
     let onCancel: () -> Void
     let onDone: () -> Void
 
@@ -156,9 +157,14 @@ struct BulkReminderPreview: View {
     @State private var listNames: [String] = []
     @State private var isProcessing = false
     @State private var loadError: String?
+    @State private var bulkListIdentifier = ""
 
-    init(text: String, onCancel: @escaping () -> Void, onDone: @escaping () -> Void) {
+    init(text: String,
+         allowLocationLookup: Bool = true,
+         onCancel: @escaping () -> Void,
+         onDone: @escaping () -> Void) {
         self.text = text
+        self.allowLocationLookup = allowLocationLookup
         self.onCancel = onCancel
         self.onDone = onDone
         _rows = State(initialValue: [])
@@ -190,6 +196,25 @@ struct BulkReminderPreview: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
+
+            if !rows.isEmpty {
+                HStack {
+                    Picker("List for selected", selection: $bulkListIdentifier) {
+                        Text("Choose list").tag("")
+                        ForEach(store.reminderCalendars(), id: \.calendarIdentifier) { calendar in
+                            Text(calendar.title).tag(calendar.calendarIdentifier)
+                        }
+                    }
+                    .frame(maxWidth: 220)
+                    Button("Apply to Selected") {
+                        applyBulkList()
+                    }
+                    .liquidGlassButtonStyle(.bordered)
+                    .disabled(bulkListIdentifier.isEmpty || !rows.contains(where: { $0.selected && $0.state != .created }) || isProcessing)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+            }
 
             Divider()
 
@@ -269,7 +294,7 @@ struct BulkReminderPreview: View {
         isProcessing = true
         Task { @MainActor in
             do {
-                let modelRows = try await OllamaReminderParser().parseBulk(text)
+                let modelRows = try await OllamaReminderParser(model: SettingsStore.shared.ollamaModel).parseBulk(text)
                 let now = Date()
                 rows = modelRows.map { item, result in
                     let input = [result.title, result.deadlineText].compactMap { $0 }.joined(separator: " ")
@@ -295,6 +320,14 @@ struct BulkReminderPreview: View {
                 loadedText = nil
                 isProcessing = false
             }
+        }
+    }
+
+    private func applyBulkList() {
+        guard let calendar = store.reminderCalendars().first(where: { $0.calendarIdentifier == bulkListIdentifier }) else { return }
+        for index in rows.indices where rows[index].selected && rows[index].state != .created {
+            rows[index].draft.calendarIdentifier = calendar.calendarIdentifier
+            rows[index].draft.calendarTitle = calendar.title
         }
     }
 
@@ -329,17 +362,25 @@ struct BulkReminderPreview: View {
         guard rows.indices.contains(index) else { return }
         var draft = rows[index].draft
         if case .unresolved(let phrase) = draft.location {
-            if let located = await LocationGeocoder.shared.geocode(phrase) {
-                draft.location = .resolved(DeletedLocation(title: located.title,
-                                                            latitude: located.latitude,
-                                                            longitude: located.longitude,
-                                                            radius: 100))
+            if allowLocationLookup {
+                if let located = await LocationGeocoder.shared.geocode(phrase) {
+                    draft.location = .resolved(DeletedLocation(title: located.title,
+                                                                latitude: located.latitude,
+                                                                longitude: located.longitude,
+                                                                radius: 100))
+                } else {
+                    draft.title += " at \(phrase)"
+                    draft.location = .none
+                    rows[index].notice = "Couldn't find location “\(phrase)” — added it to the title"
+                }
             } else {
+                // Voice flows are strictly offline. Preserve the spoken place
+                // without invoking CLGeocoder or failing EventKit creation.
                 draft.title += " at \(phrase)"
                 draft.location = .none
-                rows[index].draft = draft
-                rows[index].notice = "Couldn't find location “\(phrase)” — added it to the title"
+                rows[index].notice = "Location lookup is disabled for voice entries — added it to the title"
             }
+            rows[index].draft = draft
         }
 
         do {
@@ -461,6 +502,7 @@ struct BulkReminderPreview: View {
                 ForEach(row.draft.tags, id: \.self) { tag in
                     Text("#\(tag)")
                         .font(.caption2)
+                        .foregroundStyle(.white)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 2)
                         .liquidGlassChip(tint: TagStore.shared.color(for: tag))
