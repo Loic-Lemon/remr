@@ -598,30 +598,54 @@ private struct OllamaRecommendationsView: View {
         let url: URL
     }
 
-    private let recommendations = [
+    private let processingRecommendations = [
         Recommendation(id: "qwen2.5:3b", name: "qwen2.5:3b",
-                       summary: "Balanced quality and speed. Current remr default.",
+                       summary: "Balanced quality and speed for bulk import and voice cleanup.",
                        install: "ollama pull qwen2.5:3b",
                        url: URL(string: "https://ollama.com/library/qwen2.5:3b")!),
         Recommendation(id: "qwen2.5:1.5b", name: "qwen2.5:1.5b",
-                       summary: "Fastest and lightest. Lower quality on nuanced searches.",
+                       summary: "Fastest and lightest option for bulk import and voice cleanup.",
                        install: "ollama pull qwen2.5:1.5b",
                        url: URL(string: "https://ollama.com/library/qwen2.5:1.5b")!),
         Recommendation(id: "llama3.2:3b", name: "llama3.2:3b",
-                       summary: "Good general quality. Similar speed, different reasoning style.",
+                       summary: "Good general quality for local text processing.",
                        install: "ollama pull llama3.2:3b",
                        url: URL(string: "https://ollama.com/library/llama3.2:3b")!)
+    ]
+
+    private let embeddingRecommendations = [
+        Recommendation(id: "nomic-embed-text", name: "nomic-embed-text",
+                       summary: "Small, local embedding model for fast semantic Smart Search.",
+                       install: "ollama pull nomic-embed-text",
+                       url: URL(string: "https://ollama.com/library/nomic-embed-text")!)
     ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Recommended Ollama models")
                 .font(.headline)
-            Text("These recommendations are models used in my own use and during remr development.")
+            Text("Processing models are used for Bulk Markdown import and voice cleanup. Embedding models are used only for Smart Search.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            ForEach(recommendations) { model in
+
+            Text("Processing models")
+                .font(.subheadline.weight(.semibold))
+            ForEach(processingRecommendations) { model in
+                VStack(alignment: .leading, spacing: 4) {
+                    Link(model.name, destination: model.url)
+                        .font(.callout.weight(.semibold))
+                    Text(model.summary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(model.install)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                }
+            }
+            Text("Embedding models")
+                .font(.subheadline.weight(.semibold))
+            ForEach(embeddingRecommendations) { model in
                 VStack(alignment: .leading, spacing: 4) {
                     Link(model.name, destination: model.url)
                         .font(.callout.weight(.semibold))
