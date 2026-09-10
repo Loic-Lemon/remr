@@ -58,7 +58,7 @@ ollama pull nomic-embed-text
 
 For bulk import and voice cleanup, `qwen2.5:3b` is the balanced default; `qwen2.5:1.5b` is lighter and faster, while `llama3.2:3b` offers a different quality/speed trade-off. For Smart Search, use the separate embedding model `nomic-embed-text` and select it under **Embedding model** in Settings. The in-app recommendations popup separates these two model types.
 
-Remr starts Ollama when it needs to parse a bulk import, clean voice input, or run Smart Search. Smart Search embeds each reminder once, caches those vectors in memory, then compares the query locally. Smart Search requires an installed embedding model; select one under **Embedding model** in Settings. It stops only the Ollama process that it started. If Ollama was already running, remr leaves it running.
+Remr starts Ollama when it needs to parse a bulk import, clean voice input, or run Smart Search. Smart Search embeds each reminder once, caches those vectors in memory, then compares the query locally. Smart Search requires an installed embedding model; select one under **Embedding model** in Settings. The Local Model settings also show local-only aggregate usage statistics such as average request time, active time, battery usage, cache hits, and errors. It stops only the Ollama process that it started. If Ollama was already running, remr leaves it running.
 
 ## Bulk Markdown import
 

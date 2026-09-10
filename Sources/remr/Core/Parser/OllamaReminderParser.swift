@@ -166,6 +166,8 @@ final class OllamaReminderParser {
     }
 
     func parse(_ item: BulkMarkdownItem) async throws -> OllamaReminderResult {
+        let startedAt = Date()
+        defer { recordRequest(startedAt) }
         let prompt = """
         Return JSON only with exactly these keys: title, description, deadlineText.
 
@@ -198,8 +200,10 @@ final class OllamaReminderParser {
             }
             return Self.preserveResearchQuestion(in: item.text, result: Self.removePromptLeak(from: result))
         } catch let error as ParserError {
+            recordError()
             throw error
         } catch {
+            recordError()
             throw ParserError.unavailable("Ollama is not reachable. Start Ollama and try again.")
         }
     }
@@ -246,8 +250,12 @@ final class OllamaReminderParser {
     }
 
     func rankSearchResults(query: String, candidates: [OllamaSearchCandidate]) async throws -> [OllamaSearchMatch] {
+        let startedAt = Date()
         let process = try await startIfNeeded()
-        defer { process?.terminate() }
+        defer {
+            process?.terminate()
+            recordRequest(startedAt)
+        }
 
         let candidateData = try JSONEncoder().encode(candidates)
         let candidateJSON = String(decoding: candidateData, as: UTF8.self)
@@ -280,16 +288,22 @@ final class OllamaReminderParser {
                 .filter { validIDs.contains($0.id) && $0.score > 0 }
                 .sorted { $0.score > $1.score }
         } catch let error as ParserError {
+            recordError()
             throw error
         } catch {
+            recordError()
             throw ParserError.unavailable("Smart search could not reach Ollama.")
         }
     }
 
     func embeddings(for inputs: [String], model: String) async throws -> [[Double]] {
         guard !inputs.isEmpty else { return [] }
+        let startedAt = Date()
         let process = try await startIfNeeded()
-        defer { process?.terminate() }
+        defer {
+            process?.terminate()
+            recordRequest(startedAt)
+        }
 
         var request = URLRequest(url: embeddingEndpoint)
         request.httpMethod = "POST"
@@ -303,8 +317,10 @@ final class OllamaReminderParser {
             }
             return try JSONDecoder().decode(EmbeddingResponse.self, from: data).embeddings
         } catch let error as ParserError {
+            recordError()
             throw error
         } catch {
+            recordError()
             throw ParserError.unavailable("Embedding search could not reach Ollama.")
         }
     }
@@ -321,8 +337,12 @@ final class OllamaReminderParser {
     }
 
     func cleanVoice(_ transcript: String) async throws -> String {
+        let startedAt = Date()
         let process = try await startIfNeeded()
-        defer { process?.terminate() }
+        defer {
+            process?.terminate()
+            recordRequest(startedAt)
+        }
 
         let prompt = """
         Return JSON only with exactly this key: markdown.
@@ -349,8 +369,10 @@ final class OllamaReminderParser {
             }
             return result.markdown.trimmingCharacters(in: .whitespacesAndNewlines)
         } catch let error as ParserError {
+            recordError()
             throw error
         } catch {
+            recordError()
             throw ParserError.unavailable("Ollama is not reachable. Start Ollama and try again.")
         }
     }
@@ -382,6 +404,19 @@ final class OllamaReminderParser {
             return cleaned
         }
         return result
+    }
+
+    private func recordRequest(_ startedAt: Date) {
+        let duration = Date().timeIntervalSince(startedAt)
+        Task { @MainActor in
+            OllamaUsageStore.shared.recordRequest(duration: duration)
+        }
+    }
+
+    private func recordError() {
+        Task { @MainActor in
+            OllamaUsageStore.shared.recordError()
+        }
     }
 
     private func makeRequest(prompt: String) throws -> URLRequest {

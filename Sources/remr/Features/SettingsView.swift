@@ -28,6 +28,7 @@ struct SettingsView: View {
     @State private var ollamaModelError: String?
     @State private var ollamaEmbeddingModelError: String?
     @State private var showOllamaRecommendations = false
+    @ObservedObject private var ollamaUsage = OllamaUsageStore.shared
 
     private func loadOllamaModels() {
         guard settings.ollamaEnabled else {
@@ -279,6 +280,20 @@ struct SettingsView: View {
                                 .font(.caption)
                                 .foregroundStyle(.orange)
                         }
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Usage")
+                                .font(.subheadline.weight(.semibold))
+                            Text("\(ollamaUsage.requestCount) requests · \(String(format: "%.1fs", ollamaUsage.averageRequestSeconds)) average · \(String(format: "%.1f min", ollamaUsage.activeSeconds / 60)) active")
+                            Text("\(String(format: "%.0f%%", ollamaUsage.batteryRequestPercent)) on battery · \(String(format: "%.0f%%", ollamaUsage.embeddingCacheHitPercent)) embedding cache hits · \(ollamaUsage.errorCount) errors")
+                            Button("Reset usage statistics") {
+                                ollamaUsage.reset()
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(Color.accentColor)
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     }
                     .padding(.horizontal, 16)
                     .padding(.top, 12)

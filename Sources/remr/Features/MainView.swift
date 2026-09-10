@@ -294,6 +294,8 @@ struct MainView: View {
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
                     for (key, vector) in zip(keys, vectors) { embeddingCache[key] = vector }
+                    OllamaUsageStore.shared.recordEmbeddingCache(
+                        hits: candidates.count - missing.count, misses: missing.count)
                     smartSearchIDs = matches
                     smartSearchLoading = false
                 }
