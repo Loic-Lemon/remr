@@ -1,61 +1,103 @@
 import EventKit
 import SwiftUI
 
-/// List (category) visibility picker opened from the main list's toolbar.
-/// Each row toggles one reminder list in the main list; the list updates live
-/// behind the popover while it stays open, so hiding several lists at once is
-/// a single flow. Counts come from the current (tag-filtered) pool and are
-/// independent of visibility, so a hidden list still shows what it holds.
+/// Live list visibility picker. Counts include hidden lists and respect the tag filter.
 struct ListPickerView: View {
-    /// Per-list incomplete counts in calendar order.
     let counts: [(EKCalendar, Int)]
     let onClose: () -> Void
     @EnvironmentObject private var settings: SettingsStore
-    @State private var hoveredListID: String?
+    @State private var search = ""
+
+    private var matchingLists: [(EKCalendar, Int)] {
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        return query.isEmpty ? counts : counts.filter { $0.0.title.localizedCaseInsensitiveContains(query) }
+    }
+
+    private var visibleCount: Int {
+        counts.filter { !settings.hiddenLists.contains($0.0.calendarIdentifier) }.count
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            RemrPopoverHeader(
-                systemImage: "rectangle.3.group.fill",
-                title: "Lists",
-                subtitle: "Choose which reminder lists to show or hide.",
-                onClose: onClose
-            )
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Lists")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("\(visibleCount) of \(counts.count) shown")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Show all") {
+                    for (calendar, _) in counts {
+                        settings.setListHidden(calendar.calendarIdentifier, false)
+                    }
+                }
+                .font(.caption.weight(.medium))
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
+                .disabled(visibleCount == counts.count)
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close lists")
+            }
+            .padding(12)
 
-            Divider()
+            HStack(spacing: 7) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("Search lists", text: $search)
+                    .textFieldStyle(.plain)
+                if !search.isEmpty {
+                    Button { search = "" } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Clear list search")
+                }
+            }
+            .font(.system(size: 12))
+            .padding(.horizontal, 10)
+            .frame(height: 30)
+            .liquidGlassField(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .padding(.horizontal, 10)
+            .padding(.bottom, 8)
 
-            if counts.isEmpty {
-                Text("No reminder lists found")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 20)
-            } else {
-                ScrollView {
-                    VStack(spacing: 1) {
-                        ForEach(counts, id: \.0.calendarIdentifier) { calendar, count in
+            ScrollView {
+                LazyVStack(spacing: 2) {
+                    if matchingLists.isEmpty {
+                        Text(counts.isEmpty ? "No reminder lists found" : "No matching lists")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, minHeight: 54)
+                    } else {
+                        ForEach(matchingLists, id: \.0.calendarIdentifier) { calendar, count in
                             row(calendar: calendar, count: count)
                         }
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
                 }
-                .scrollIndicators(.hidden)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 4)
             }
+            .frame(height: min(260, matchingLists.isEmpty ? 62 : CGFloat(matchingLists.count) * 38 + 8))
 
-            Divider()
-
-            HStack {
-                Text("Hidden lists still count toward the menu bar badge")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            Text("Choose the lists shown in your reminders.")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
         }
-        .frame(width: 264)
+        .frame(width: 272)
         .liquidGlassGrouping()
+        .onExitCommand(perform: onClose)
     }
 
     private func row(calendar: EKCalendar, count: Int) -> some View {
@@ -64,44 +106,32 @@ struct ListPickerView: View {
         return Button {
             settings.setListHidden(identifier, visible)
         } label: {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(Color(cgColor: calendar.cgColor))
-                    .frame(width: 10, height: 10)
+            HStack(spacing: 10) {
+                Image(systemName: "list.bullet")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color(cgColor: calendar.cgColor))
+                    .frame(width: 24, height: 24)
+                    .background(Color(cgColor: calendar.cgColor).opacity(0.12),
+                                in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                 Text(calendar.title)
-                    .font(.caption.weight(.medium))
+                    .font(.system(size: 12, weight: visible ? .medium : .regular))
                     .foregroundStyle(visible ? .primary : .secondary)
                     .lineLimit(1)
-                    .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                if count > 0 {
-                    Text("\(count)")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-                if visible {
-                    Image(systemName: "checkmark")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(Color.accentColor)
-                        .frame(width: 12)
-                } else {
-                    Color.clear.frame(width: 12)
-                }
+                Text("\(count)")
+                    .font(.system(size: 11))
+                    .monospacedDigit()
+                    .foregroundStyle(.tertiary)
+                Image(systemName: visible ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(visible ? Color.accentColor : Color.secondary.opacity(0.35))
             }
-            .contentShape(Rectangle())
-            .padding(.horizontal, 9)
-            .padding(.vertical, 6)
-            .background {
-                if hoveredListID == identifier {
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(AppPalette.controlTint)
-                }
-            }
+            .frame(height: 36)
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("\(visible ? "Hide" : "Show") \(calendar.title) list")
-        .onHover { hovering in
-            hoveredListID = hovering ? identifier : (hoveredListID == identifier ? nil : hoveredListID)
-        }
+        .buttonStyle(DropdownRowStyle(selected: visible))
+        .accessibilityLabel("\(calendar.title), \(count) reminders")
+        .accessibilityValue(visible ? "Shown" : "Hidden")
+        .accessibilityHint("Toggle list visibility")
+
     }
 }

@@ -797,4 +797,62 @@ final class KeyboardNavigationTests: XCTestCase {
         bindings[.moveDown] = KeyCombo([])
         XCTAssertEqual(KeyboardRouter.action(keyCode: 125, heldKeyCodes: [125], context: context(), bindings: bindings), .none)
     }
+
+    func testPomodoroShortcutsOnlyHandlePlainKeysOutsideTextFields() {
+        var ctx = context(hasSelection: true, selectionIsReminder: true)
+        ctx.pomodoroEnabled = true
+        XCTAssertEqual(KeyboardRouter.action(keyCode: 35, heldKeyCodes: [35], context: ctx), .togglePomodoro)
+        XCTAssertEqual(KeyboardRouter.action(keyCode: 36, heldKeyCodes: [36], context: ctx), .activateRow)
+        ctx.pomodoroPresented = true
+        XCTAssertEqual(KeyboardRouter.action(keyCode: 36, heldKeyCodes: [36], context: ctx), .togglePomodoroRunning)
+        XCTAssertEqual(KeyboardRouter.action(keyCode: 76, heldKeyCodes: [76], context: ctx), .togglePomodoroRunning)
+        XCTAssertEqual(KeyboardRouter.action(keyCode: 35, heldKeyCodes: [35, ModifierKey.command.keyCode], context: ctx), .none)
+        XCTAssertEqual(KeyboardRouter.action(keyCode: 36, heldKeyCodes: [36, ModifierKey.command.keyCode], context: ctx), .openRow)
+
+        ctx.pomodoroPresented = false
+        ctx.textFieldFocused = true
+        XCTAssertEqual(KeyboardRouter.action(keyCode: 35, heldKeyCodes: [35], context: ctx), .none)
+        XCTAssertEqual(KeyboardRouter.action(keyCode: 36, heldKeyCodes: [36], context: ctx), .none)
+        ctx.textFieldFocused = false
+        ctx.searchFieldFocused = true
+        XCTAssertEqual(KeyboardRouter.action(keyCode: 35, heldKeyCodes: [35], context: ctx), .none)
+        XCTAssertEqual(KeyboardRouter.action(keyCode: 36, heldKeyCodes: [36], context: ctx), .none)
+        ctx.searchFieldFocused = false
+        ctx.pomodoroEnabled = false
+        XCTAssertEqual(KeyboardRouter.action(keyCode: 35, heldKeyCodes: [35], context: ctx), .none)
+        XCTAssertEqual(KeyboardRouter.action(keyCode: 36, heldKeyCodes: [36], context: ctx), .activateRow)
+    }
+
+
+    func testPomodoroOpensFromTheAutofocusedEmptyTitle() {
+        var ctx = context(textFieldFocused: true)
+        ctx.pomodoroEnabled = true
+        ctx.emptyTitleFieldFocused = true
+        XCTAssertEqual(KeyboardRouter.action(keyCode: 35, heldKeyCodes: [35], context: ctx), .togglePomodoro)
+        XCTAssertEqual(KeyboardRouter.action(keyCode: 36, heldKeyCodes: [36], context: ctx), .none)
+        ctx.emptyTitleFieldFocused = false
+        XCTAssertEqual(KeyboardRouter.action(keyCode: 35, heldKeyCodes: [35], context: ctx), .none)
+    }
+
+    func testOpenPomodoroOwnsToggleAndStartDespiteBackgroundFocus() {
+        var ctx = context(textFieldFocused: true)
+        ctx.pomodoroEnabled = true
+        ctx.pomodoroPresented = true
+        XCTAssertEqual(KeyboardRouter.action(keyCode: 35, heldKeyCodes: [35], context: ctx), .togglePomodoro)
+        XCTAssertEqual(KeyboardRouter.action(keyCode: 36, heldKeyCodes: [36], context: ctx), .togglePomodoroRunning)
+        XCTAssertEqual(KeyboardRouter.action(keyCode: 76, heldKeyCodes: [76], context: ctx), .togglePomodoroRunning)
+        ctx.searchFieldFocused = true
+        XCTAssertEqual(KeyboardRouter.action(keyCode: 35, heldKeyCodes: [35], context: ctx), .togglePomodoro)
+        XCTAssertEqual(KeyboardRouter.action(keyCode: 36, heldKeyCodes: [36], context: ctx), .togglePomodoroRunning)
+    }
+
+    func testPomodoroShortcutsIgnoreLettersLeftByMissedKeyUpEvents() {
+        var ctx = context()
+        ctx.pomodoroEnabled = true
+        XCTAssertEqual(KeyboardRouter.action(keyCode: 35, heldKeyCodes: [35, 49], context: ctx), .togglePomodoro)
+        ctx.pomodoroPresented = true
+        XCTAssertEqual(KeyboardRouter.action(keyCode: 36, heldKeyCodes: [35, 36, 49], context: ctx), .togglePomodoroRunning)
+        XCTAssertEqual(KeyboardRouter.action(keyCode: 35, heldKeyCodes: [35, 49, ModifierKey.command.keyCode], context: ctx), .none)
+    }
+
 }

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "remr",
+  "title": "Remr",
+  "description": "See and complete your Reminders from Raycast.",
+  "icon": "assets/icon.png",
+  "author": "Loic-Lemon",
+  "platforms": ["macOS"],
+  "categories": ["Productivity"],
+  "license": "MIT",
+  "commands": [
+    {
+      "name": "calendar",
+      "title": "Agenda",
+      "subtitle": "Open calendar view",
+      "description": "Open the calendar view in Remr.",
+      "keywords": ["remr", "calendar", "schedule"],
+      "mode": "no-view"
+    }
+  ],
+  "dependencies": {
+    "@raycast/api": "^1.95.0",
+    "@raycast/utils": "^1.17.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.24",
+    "@types/react": "^18.3.3",
+    "typescript": "^5.4.5"
+  },
+  "scripts": {
+    "build": "ray build",
+    "dev": "ray develop",
+    "lint": "ray lint",
+    "typecheck": "tsc --noEmit"
+  }
+}

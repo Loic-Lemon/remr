@@ -1,4 +1,16 @@
+import AppKit
 import SwiftUI
+
+private struct NativeNotchGlassEnabledKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    var nativeNotchGlassEnabled: Bool {
+        get { self[NativeNotchGlassEnabledKey.self] }
+        set { self[NativeNotchGlassEnabledKey.self] = newValue }
+    }
+}
 
 /// Liquid Glass surfaces with appearance-aware fallbacks for macOS 13 through
 /// 25. On macOS 26 the popover window itself is native Liquid Glass; inner
@@ -17,6 +29,105 @@ import SwiftUI
 ///   have no visible border. Keycaps and tinted state chips keep theirs
 ///   because they need a scannable edge.
 extension View {
+    /// The full-window surface of the main content, chosen by how it is
+    /// presented. The native popover is its own Liquid Glass; the borderless
+    /// notch panel must paint the glass itself.
+    @ViewBuilder
+    func remrMainSurface(_ style: MainSurfaceStyle, notchHeadHeight: CGFloat = 0,
+                         notchReveal: NotchRevealController? = nil,
+                         notchCollapsedWidth: CGFloat = 172) -> some View {
+        switch style {
+        case .popover: liquidGlassContainer()
+        case .floatingPanel:
+            liquidGlassNotchPanel(headHeight: notchHeadHeight, reveal: notchReveal,
+                                  collapsedWidth: notchCollapsedWidth)
+        }
+    }
+
+    /// A frosted backdrop with a refractive glass lens and a soft black attachment
+    /// at the screen edge. Content animates independently above this surface.
+    @ViewBuilder
+    func liquidGlassNotchPanel(headHeight: CGFloat, fade: CGFloat = 180,
+                              reveal: NotchRevealController? = nil,
+                              collapsedWidth: CGFloat = 172,
+                              defersGlassUntilOpen: Bool = false) -> some View {
+        if let reveal {
+            self.liquidGlassGrouping()
+                .notchReveal(reveal, collapsedWidth: collapsedWidth,
+                             collapsedHeight: max(24, headHeight),
+                             defersGlassUntilOpen: defersGlassUntilOpen,
+                             surface: notchPanelSurface(headHeight: headHeight, fade: fade),
+                             backdrop: NotchWindowFrost())
+        } else {
+            self.liquidGlassGrouping()
+                .background {
+                    ZStack {
+                        NotchWindowFrost().clipShape(NotchPanelShape())
+                        notchPanelSurface(headHeight: headHeight, fade: fade)
+                    }
+                }
+        }
+    }
+
+    private func notchPanelSurface(headHeight: CGFloat, fade: CGFloat) -> some View {
+        let shape = NotchPanelShape()
+        return NotchGlassBackdrop()
+        // Keep the fixed-height blend out of sizing, especially while the
+        // glass is still shorter than the blend during its opening frames.
+        .overlay(alignment: .top) {
+            notchBleedLayer(headHeight: headHeight, fade: fade)
+        }
+        .clipShape(shape)
+        // Light catches the lower rim rather than outlining the screen edge.
+        // A primary-colored stroke made the light appearance look boxed in.
+        .overlay {
+            shape.stroke(
+                LinearGradient(stops: [
+                    .init(color: .clear, location: 0),
+                    .init(color: .white.opacity(0.04), location: 0.25),
+                    .init(color: .white.opacity(0.22), location: 1)
+                ], startPoint: .top, endPoint: .bottom),
+                lineWidth: 0.75
+            )
+            .allowsHitTesting(false)
+        }
+    }
+
+    /// A broad attachment at the top, strongest around the camera and softer
+    /// at the shoulders, dissolving downward without a visible band edge.
+    private func notchBleedLayer(headHeight: CGFloat, fade: CGFloat) -> some View {
+        let height = headHeight + fade
+        let horizontal = LinearGradient(
+            stops: [
+                .init(color: .black.opacity(0.65), location: 0),
+                .init(color: .black.opacity(0.94), location: 0.30),
+                .init(color: .black, location: 0.5),
+                .init(color: .black.opacity(0.94), location: 0.70),
+                .init(color: .black.opacity(0.65), location: 1)
+            ],
+            startPoint: .leading,
+            endPoint: .trailing
+        )
+        return Color.black
+            .frame(height: height)
+            .mask(verticalBleedMask(headHeight: headHeight, height: height))
+            .mask(horizontal)
+    }
+
+    /// Alpha falloff down the bleed: solid through the head, then smoothed out
+    /// to nothing. The curve, rather than a linear ramp, is what keeps it from
+    /// reading as a band.
+    private func verticalBleedMask(headHeight: CGFloat, height: CGFloat) -> LinearGradient {
+        let hold = min(1, headHeight / max(1, height))
+        let stops = (0...64).map { index -> Gradient.Stop in
+            let t = Double(index) / 64
+            let u = t <= hold ? 0 : (t - hold) / max(0.0001, 1 - hold)
+            let eased = u * u * (3 - 2 * u)   // smoothstep
+            return Gradient.Stop(color: .black.opacity(1 - eased), location: t)
+        }
+        return LinearGradient(stops: stops, startPoint: .top, endPoint: .bottom)
+    }
+
     /// The full-window surface of the main popover. macOS 26: no custom glass —
     /// the NSPopover's native Liquid Glass is the surface; this only groups the
     /// inner glass controls. Older systems get the translucent material and
@@ -96,6 +207,12 @@ extension View {
                 .overlay(shape.stroke(AppPalette.controlStroke, lineWidth: 1))
         }
     }
+
+    /// Search and the reminder composer share a softly rounded surface with
+    /// a focused accent instead of a permanent dark outline.
+    func liquidGlassInputField(focused: Bool) -> some View {
+        modifier(GlassInputField(focused: focused))
+    }
     /// A compact capsule control such as the tag filter button, with a subtle
     /// semantic edge so its pill silhouette remains legible on glass.
     @ViewBuilder
@@ -120,14 +237,18 @@ extension View {
     /// Ordinary fields are intentionally subtle; keycaps need a visible edge
     /// in both appearances so their boundaries remain scannable.
     @ViewBuilder
-    func liquidGlassKeycap() -> some View {
+    func liquidGlassKeycap(refractive: Bool = true) -> some View {
         let shape = RoundedRectangle(cornerRadius: 5)
-        if #available(macOS 26.0, *) {
+        if #available(macOS 26.0, *), refractive {
             self
                 .foregroundStyle(.primary)
                 .glassEffect(.regular.tint(AppPalette.keycapTint), in: shape)
                 .overlay(shape.stroke(AppPalette.keycapStroke, lineWidth: 1))
         } else {
+            // Scrolling keycaps use a flat fill: native glass is drawn in a
+            // separate layer and can escape the scroll viewport's clip, and a
+            // material would re-sample its backdrop for every keycap on every
+            // scrolled frame.
             self
                 .foregroundStyle(.primary)
                 .background(shape.fill(AppPalette.keycapFill))
@@ -271,5 +392,113 @@ extension View {
                 .background(Capsule().fill(AppPalette.surfaceFill))
                 .overlay(Capsule().strokeBorder(AppPalette.controlStroke, lineWidth: 1))
         }
+    }
+}
+
+/// The expensive window-server blur stays at the full panel size during the
+/// reveal. It is clipped separately from the moving glass lens.
+private struct NotchWindowFrost: View {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    var body: some View {
+        Group {
+            if reduceTransparency {
+                Color(nsColor: .windowBackgroundColor)
+            } else {
+                BehindWindowBlur(material: .underWindowBackground)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+/// Only the lightweight lens and lighting follow the opening contour.
+private struct NotchGlassBackdrop: View {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.nativeNotchGlassEnabled) private var nativeGlassEnabled
+
+    var body: some View {
+        ZStack {
+            if reduceTransparency {
+                Color.clear
+            } else {
+                // Large panels animate with the fixed blur, light and moving
+                // rim first. Mount the native lens only at its final size.
+                if #available(macOS 26.0, *), nativeGlassEnabled {
+                    Color.clear.glassEffect(
+                        .regular.tint(colorScheme == .dark
+                                      ? .black.opacity(0.06) : .white.opacity(0.04)),
+                        in: NotchPanelShape()
+                    )
+                }
+                // A small directional light gives the broad surface depth
+                // without adding a second outline around its silhouette.
+                LinearGradient(stops: [
+                    .init(color: .white.opacity(colorScheme == .dark ? 0.06 : 0.12), location: 0),
+                    .init(color: .clear, location: 0.45),
+                    .init(color: .black.opacity(colorScheme == .dark ? 0.08 : 0.025), location: 1)
+                ], startPoint: .topLeading, endPoint: .bottomTrailing)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+private struct GlassInputField: ViewModifier {
+    let focused: Bool
+    private let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+
+    @ViewBuilder
+    private func surface(for content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            // Associate the lens with its foreground so AppKit text views
+            // stay above it instead of entering a separate glass sample.
+            content.glassEffect(.regular.tint(Color.primary.opacity(0.035)), in: shape)
+        } else {
+            content.background(shape.fill(AppPalette.fieldFill))
+        }
+    }
+
+    func body(content: Content) -> some View {
+        surface(for: content)
+            .overlay {
+                shape.strokeBorder(
+                    LinearGradient(colors: [.white.opacity(0.20), .white.opacity(0.05)],
+                                   startPoint: .topLeading, endPoint: .bottomTrailing),
+                    lineWidth: 0.75
+                )
+                .allowsHitTesting(false)
+            }
+            .overlay {
+                shape.strokeBorder(focused ? Color.accentColor.opacity(0.6) : .clear,
+                                   lineWidth: 1)
+                    .allowsHitTesting(false)
+            }
+            .animation(.easeOut(duration: 0.16), value: focused)
+    }
+}
+
+/// A real behind-window blur for the borderless floating panels.
+///
+/// SwiftUI's `.background(.ultraThinMaterial)` inside a transparent window is a
+/// translucent wash, and the Liquid Glass surface is a lens rather than a blur,
+/// so neither actually blurs the desktop behind the panel. An
+/// `NSVisualEffectView` with `.behindWindow` blending does, which is what gives
+/// the notch panel the depth the native popover has.
+struct BehindWindowBlur: NSViewRepresentable {
+    var material: NSVisualEffectView.Material = .popover
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = material
+        view.blendingMode = .behindWindow
+        view.state = .active
+        return view
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {
+        view.material = material
+        view.state = .active
     }
 }

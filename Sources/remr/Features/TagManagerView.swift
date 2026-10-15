@@ -3,7 +3,7 @@ import SwiftUI
 /// Manage tag colors and apply tag renames/removals across remr's reminders.
 struct TagManagerView: View {
     @EnvironmentObject private var store: ReminderStore
-    @Environment(\.dismiss) private var dismiss
+    var onClose: () -> Void = {}
     @ObservedObject private var tagStore = TagStore.shared
     @ObservedObject private var filterStore = FilterStore.shared
 
@@ -29,7 +29,7 @@ struct TagManagerView: View {
                 }
                 Spacer()
                 Button {
-                    dismiss()
+                    onClose()
                 } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 11, weight: .semibold))
@@ -165,26 +165,13 @@ struct TagManagerView: View {
     }
 
     private func colorMenu(for tag: String) -> some View {
-        Menu {
-            ForEach(Array(TagStore.palette.enumerated()), id: \.offset) { index, nsColor in
-                Button {
-                    tagStore.setColor(for: tag, paletteIndex: index)
-                } label: {
-                    HStack(spacing: 7) {
-                        Circle()
-                            .fill(Color(nsColor: nsColor))
-                            .frame(width: 10, height: 10)
-                        Text(TagStore.colorName(index))
-                    }
-                }
-            }
-        } label: {
-            Circle()
-                .fill(tagStore.color(for: tag))
-                .frame(width: 18, height: 18)
-                .overlay(Circle().stroke(Color.primary.opacity(0.18), lineWidth: 1))
-        }
-        .menuStyle(.borderlessButton)
+        RemrDropdown(title: "Color for #\(tag)", selection: Binding(
+            get: { tagStore.paletteIndex(for: tag) },
+            set: { tagStore.setColor(for: tag, paletteIndex: $0) }
+        ), options: Array(TagStore.palette.enumerated()).map { index, color in
+            DropdownOption(value: index, title: TagStore.colorName(index),
+                           systemImage: "circle.fill", color: Color(nsColor: color))
+        }, showsTitle: false)
         .help("Change #\(tag) color")
     }
 

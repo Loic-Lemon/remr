@@ -6,6 +6,11 @@ DerivedData/
 .pi/
 graphify-out/
 
+# Raycast extension
+raycast-extension/node_modules/
+raycast-extension/.raycast/
+raycast-extension/dist/
+
 # Local configuration and credentials
 .env
 .env.*

@@ -249,6 +249,7 @@ enum BindableAction: String, CaseIterable, Identifiable {
     case openCalendar    // "Open calendar view" — global Carbon hotkey
     case voiceVerify     // "Voice verify" — global Carbon hotkey
     case voiceLog        // "Voice log" — global Carbon hotkey
+    case openCalendarInApp // "Switch reminders / calendar" — local shortcut
     case focusSearch     // "Focus search"
     case moveDown        // "Move selection down"
     case moveUp          // "Move selection up"
@@ -280,6 +281,7 @@ enum BindableAction: String, CaseIterable, Identifiable {
         case .openCalendar: return "Open calendar view"
         case .voiceVerify: return "Voice verify"
         case .voiceLog: return "Voice log"
+        case .openCalendarInApp: return "Switch reminders / calendar"
         case .focusSearch: return "Focus search"
         case .moveDown: return "Move selection down"
         case .moveUp: return "Move selection up"
@@ -305,11 +307,12 @@ enum DefaultBindings {
     /// Source of truth for the router's default argument and for SettingsStore merging.
     /// One chord per action; search defaults to ⌘F.
     static let all: [BindableAction: KeyCombo] = [
-        .togglePopover: KeyCombo([.modifier(.option), .modifier(.command), .key(UInt16(kVK_ANSI_R))]), // ⌥⌘R
+        .togglePopover: KeyCombo([.modifier(.option), .key(UInt16(kVK_Space))]),                    // ⌥Space
         .quickAdd:      KeyCombo([.modifier(.option), .modifier(.command), .key(UInt16(kVK_ANSI_N))]), // ⌥⌘N
         .openCalendar:  KeyCombo([.modifier(.option), .modifier(.command), .key(UInt16(kVK_ANSI_C))]), // ⌥⌘C
         .voiceVerify:   KeyCombo([.modifier(.option), .modifier(.command), .key(UInt16(kVK_ANSI_V))]), // ⌥⌘V
         .voiceLog:      KeyCombo([.modifier(.option), .modifier(.shift), .modifier(.command), .key(UInt16(kVK_ANSI_V))]), // ⌥⇧⌘V
+        .openCalendarInApp: KeyCombo([.key(UInt16(kVK_ANSI_C))]),                                   // C
         .focusSearch:   KeyCombo([.modifier(.command), .key(UInt16(kVK_ANSI_F))]),                      // ⌘F
         .moveDown:      KeyCombo([.key(125)]),                                                         // ↓
         .moveUp:        KeyCombo([.key(126)]),                                                         // ↑

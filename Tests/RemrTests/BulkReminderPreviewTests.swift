@@ -32,6 +32,44 @@ final class BulkReminderPreviewTests: XCTestCase {
         XCTAssertEqual(items[0].tags, ["research"])
     }
 
+    func testMarkdownBulkParserKeepsBulletsWithNumberedReminder() {
+        let items = BulkMarkdownParser.items(from: """
+        1. Prepare the presentation
+           - Confirm the agenda
+           - Send the invitations
+
+        2. Buy groceries
+        - Milk
+        - Bread
+        """)
+
+        XCTAssertEqual(items.map(\.text), [
+            "Prepare the presentation\n- Confirm the agenda\n- Send the invitations",
+            "Buy groceries\n- Milk\n- Bread"
+        ])
+    }
+
+    func testMarkdownBulkParserTreatsEveryNumberAsANewReminder() {
+        let items = BulkMarkdownParser.items(from: """
+        1. Review the migration
+           - Compare the old schema
+           1. Review the child schema
+        2) Deploy the change
+        """)
+
+        XCTAssertEqual(items.map(\.text), [
+            "Review the migration\n- Compare the old schema",
+            "Review the child schema",
+            "Deploy the change"
+        ])
+    }
+
+    func testMarkdownBulkParserKeepsBulletOnlyInputBackwardCompatible() {
+        let items = BulkMarkdownParser.items(from: "- Buy milk\n- Call Alex")
+
+        XCTAssertEqual(items.map(\.text), ["Buy milk", "Call Alex"])
+    }
+
     func testSelectionDefaultsKeepEmptyTitleOffAndUnknownListOn() {
         let parsed = NaturalLanguageParser.parseBulk("tomorrow\n@unknown list task\nordinary", now: fixedDate,
                                                        listNames: ["Home"])

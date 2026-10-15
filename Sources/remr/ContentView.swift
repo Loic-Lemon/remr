@@ -1,6 +1,28 @@
 import SwiftUI
 
+/// Which window chrome the main content is presented in. The native popover
+/// supplies its own Liquid Glass surface, while the notch panel is a
+/// borderless window that has to paint its own glass.
+enum MainSurfaceStyle {
+    case popover
+    case floatingPanel
+}
+
 struct ContentView: View {
+    var surface: MainSurfaceStyle = .popover
+    /// Content width. The menu-bar popover is fixed at 400; the notch panel
+    /// uses the user's configured width.
+    var width: CGFloat = 400
+    /// Empty glass added above the content in the notch panel, so the surface
+    /// reaches up to the screen edge behind the menu bar and notch while the
+    /// content itself still starts below them.
+    var topInset: CGFloat = 0
+    /// Side inset for the notch panel, keeping the content clear of the
+    /// silhouette's shoulders.
+    var horizontalInset: CGFloat = 0
+    var notchReveal: NotchRevealController? = nil
+    var notchCollapsedWidth: CGFloat = 172
+
     @EnvironmentObject var store: ReminderStore
     @EnvironmentObject var settings: SettingsStore
 
@@ -12,12 +34,19 @@ struct ContentView: View {
             case .denied:
                 deniedView
             case .authorized:
-                MainView()
+                MainView(surface: surface)
             }
         }
-        .frame(width: 400)
+        .frame(width: width)
         .frame(minHeight: 600)
-        .liquidGlassContainer()
+        .onAppear {
+            PomodoroKeyProbe.log("ContentView.onAppear accessState=\(store.accessState)")
+        }
+        .notchContentReveal(notchReveal)
+        .padding(.top, topInset)
+        .padding(.horizontal, horizontalInset)
+        .remrMainSurface(surface, notchHeadHeight: topInset,
+                         notchReveal: notchReveal, notchCollapsedWidth: notchCollapsedWidth)
     }
 
     // MARK: - Not determined

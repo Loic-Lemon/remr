@@ -124,12 +124,11 @@ struct NewReminderView: View {
                     .padding(.horizontal, 12)
                     .padding(.bottom, 6)
             }
-            // The add area is one glass surface, so adjacent editor pieces do
-            // not draw overlapping translucent borders. Its bottom edge stays
-            // square against the search row below the input area.
+            // One rounded glass surface expands with the description and
+            // preview, matching Search without overlapping inner borders.
         }
         if hasOwnGlass {
-            content.liquidGlassField(in: EntryContainerShape())
+            content.liquidGlassInputField(focused: titleFocused || focusedField == .notes)
         } else {
             content
         }
@@ -178,66 +177,58 @@ struct NewReminderView: View {
         parsedPreview = NaturalLanguageParser.parse(title, now: now, calendar: .current, listNames: listNames)
     }
 
-    private struct EntryContainerShape: Shape {
-        func path(in rect: CGRect) -> Path {
-            let radius = min(9, min(rect.width, rect.height) / 2)
-            var path = Path()
-            path.move(to: CGPoint(x: rect.minX, y: rect.maxY))
-            path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + radius))
-            path.addQuadCurve(to: CGPoint(x: rect.minX + radius, y: rect.minY),
-                              control: CGPoint(x: rect.minX, y: rect.minY))
-            path.addLine(to: CGPoint(x: rect.maxX - radius, y: rect.minY))
-            path.addQuadCurve(to: CGPoint(x: rect.maxX, y: rect.minY + radius),
-                              control: CGPoint(x: rect.maxX, y: rect.minY))
-            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
-            path.closeSubpath()
-            return path
-        }
-    }
-
     private var titleField: some View {
-        ZStack(alignment: .topLeading) {
-            ReminderInputView(
-                text: $title, refocusOnClear: true, onMoveDown: titleReturnPressed,
-                focusRequest: titleFocusBump,
-                // Fires when the field appears in a window without already
-                // owning first responder — the panel opens with the window
-                // not yet key, when a SwiftUI @FocusState request is dropped.
-                // The AppKit makeFirstResponder path lands reliably.
-                onAppearInWindow: { titleFocusBump += 1 },
-                onTokenChange: { context in completionContext = context; selectedSuggestion = 0 },
-                onFocusChange: { titleFocused = $0 },
-                dropdownActive: titleFocused && !suggestionMatches.isEmpty,
-                onNavigate: navigateSuggestion,
-                onDismiss: { completionContext = nil },
-                onFocusForward: {
-                    if title.isEmpty && notes.isEmpty {
-                        onTabForward?()
-                    } else {
-                        focusedField = .notes
-                        notesFocusRequest += 1
-                    }
-                },
-                onFocusBack: { onTabBackFromTitle?() },
-                onEscape: onEscape,
-                replaceTokenRequest: replaceTokenRequest,
-                replaceTokenWith: replaceTokenWith,
-                replaceTokenRange: replaceTokenRange
-            )
-            if title.isEmpty {
-                Text("e.g. Take out the trash before end of day @home")
-                    .font(.body)
+        HStack(spacing: 8) {
+            if hasOwnGlass {
+                Image(systemName: "plus")
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(.secondary)
-                    .padding(.top, 8)
-                    .padding(.leading, 5)
-                    .allowsHitTesting(false)
+                    .frame(width: 14)
+                    .accessibilityHidden(true)
             }
+            ZStack(alignment: .topLeading) {
+                ReminderInputView(
+                    text: $title, refocusOnClear: true, onMoveDown: titleReturnPressed,
+                    focusRequest: titleFocusBump,
+                    // Fires when the field appears in a window without already
+                    // owning first responder — the panel opens with the window
+                    // not yet key, when a SwiftUI @FocusState request is dropped.
+                    // The AppKit makeFirstResponder path lands reliably.
+                    onAppearInWindow: { titleFocusBump += 1 },
+                    onTokenChange: { context in completionContext = context; selectedSuggestion = 0 },
+                    onFocusChange: { titleFocused = $0 },
+                    dropdownActive: titleFocused && !suggestionMatches.isEmpty,
+                    onNavigate: navigateSuggestion,
+                    onDismiss: { completionContext = nil },
+                    onFocusForward: {
+                        if title.isEmpty && notes.isEmpty {
+                            onTabForward?()
+                        } else {
+                            focusedField = .notes
+                            notesFocusRequest += 1
+                        }
+                    },
+                    onFocusBack: { onTabBackFromTitle?() },
+                    onEscape: onEscape,
+                    replaceTokenRequest: replaceTokenRequest,
+                    replaceTokenWith: replaceTokenWith,
+                    replaceTokenRange: replaceTokenRange
+                )
+                if title.isEmpty {
+                    Text(hasOwnGlass ? "Add a task…" : "e.g. Take out the trash before end of day @home")
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 8)
+                        .padding(.leading, 5)
+                        .allowsHitTesting(false)
+                }
+            }
+            .focused($focusedField, equals: .title)
+            .frame(height: 32)
         }
-        .focused($focusedField, equals: .title)
-        .frame(height: 32)
-        .padding(.horizontal, 12)
-        .padding(.top, 8)
-        .padding(.bottom, 4)
+        .padding(.horizontal, hasOwnGlass ? 10 : 12)
+        .padding(.top, hasOwnGlass ? 2 : 8)
+        .padding(.bottom, hasOwnGlass ? 2 : 4)
     }
 
     private var notesField: some View {
@@ -488,7 +479,7 @@ struct NewReminderView: View {
         }
         .padding(.horizontal, 12)
         .padding(.bottom, 6)
-        .liquidGlassField(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .remrDropdownSurface()
     }
 
     private func suggestionIcon(for kind: SuggestionKind) -> String {

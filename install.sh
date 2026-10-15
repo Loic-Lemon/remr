@@ -7,16 +7,16 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-APP_SOURCE="$ROOT/build/Build/Products/Debug/remr.app"
+APP_SOURCE="$ROOT/build/Build/Products/Release/remr.app"
 APP_DEST="/Applications/remr.app"
 
 cd "$ROOT"
 
 echo "▸ Building remr…"
-swift build
+swift build -c release
 
 echo "▸ Assembling remr.app…"
-Scripts/make-bundle.sh
+Scripts/make-bundle.sh release
 
 # Quit the running instance so the bundle can be replaced cleanly. remr is
 # menu-bar only (no window to lose); reminders are written to Reminders.app

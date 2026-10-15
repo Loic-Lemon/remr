@@ -16,8 +16,10 @@ enum AppPalette {
     /// appearances without becoming a hard outline.
     static let controlStroke = Color.primary.opacity(0.20)
     /// Keycaps need stronger separation than ordinary fields while remaining
-    /// appearance-aware.
-    static let keycapFill = AnyShapeStyle(.thickMaterial)
+    /// appearance-aware. The fill is flat rather than a material: the
+    /// shortcuts pane scrolls dozens of keycaps, and a material has to
+    /// re-sample its backdrop for each one on every scrolled frame.
+    static let keycapFill = AnyShapeStyle(Color.primary.opacity(0.07))
     static let keycapTint = Color.primary.opacity(0.10)
     static let keycapStroke = Color.primary.opacity(0.28)
     /// Translucent fallback surface for transient chrome below macOS 26.

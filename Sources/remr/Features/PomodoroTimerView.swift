@@ -1,5 +1,31 @@
 import SwiftUI
 
+/// A separate section below the disclosure header. Closed panels are removed,
+/// including their control layers, rather than left mounted behind a clip.
+struct PomodoroPanelSection: View {
+    var isPresented: Bool
+    var timer: PomodoroTimerStore
+    var onHeightChange: (CGFloat) -> Void = { _ in }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Group {
+            if isPresented {
+                PomodoroTimerView(timer: timer)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .background(HeightReader(onChange: onHeightChange))
+                    .compositingGroup()
+                    .transition(reduceMotion ? .opacity : .asymmetric(
+                        insertion: .opacity.combined(with: .offset(y: 12)),
+                        removal: .opacity))
+                    .zIndex(1)
+            }
+        }
+        .allowsHitTesting(isPresented)
+        .accessibilityHidden(!isPresented)
+    }
+}
+
 struct PomodoroTimerView: View {
     @ObservedObject var timer: PomodoroTimerStore
 
@@ -13,85 +39,70 @@ struct PomodoroTimerView: View {
     }
 
     var body: some View {
-        VStack(spacing: 16) {
-            HStack {
-                Text(timer.phase.title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text("Cycle \(timer.completedFocusSessions + 1)")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .liquidGlassCapsule()
-            }
-
-            ZStack {
-                Circle()
-                    .stroke(phaseColor.opacity(0.12), lineWidth: 10)
-                Circle()
-                    .trim(from: 0, to: progress)
-                    .stroke(phaseColor,
-                            style: StrokeStyle(lineWidth: 10, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-                    .animation(.easeInOut(duration: 0.35), value: progress)
-                VStack(spacing: 2) {
-                    Text(format(timer.remaining))
-                        .font(.system(size: 34, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                    Text(timer.isRunning ? "in progress" : "paused")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+        VStack(spacing: 12) {
+            HStack(spacing: 20) {
+                ZStack {
+                    Circle()
+                        .stroke(phaseColor.opacity(0.12), lineWidth: 6)
+                    Circle()
+                        .trim(from: 0, to: progress)
+                        .stroke(phaseColor, style: StrokeStyle(lineWidth: 6, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                    VStack(spacing: 2) {
+                        Text(timer.formattedRemaining)
+                            .font(.system(size: 24, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                            .contentTransition(.identity)
+                        Text(timer.isRunning ? "in progress" : "paused")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                    }
                 }
-            }
-            .frame(width: 132, height: 132)
+                .frame(width: 96, height: 96)
 
-            HStack(spacing: 10) {
-                Button(timer.isRunning ? "Pause" : "Start") {
-                    timer.isRunning ? timer.pause() : timer.start()
-                }
-                .liquidGlassButtonStyle(.borderedProminent, prominent: true)
-                .controlSize(.small)
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text(timer.phase.title)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(phaseColor)
+                        Spacer(minLength: 4)
+                        Text("Cycle \(timer.completedFocusSessions + 1)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    HStack(spacing: 8) {
+                        Button(timer.isRunning ? "Pause" : "Start") {
+                            timer.isRunning ? timer.pause() : timer.start()
+                        }
+                        .buttonStyle(PomodoroActionButtonStyle(prominent: true))
 
-                Button("Reset") { timer.reset() }
-                    .liquidGlassButtonStyle(.bordered)
+                        Button("Reset") { timer.reset() }
+                            .buttonStyle(PomodoroActionButtonStyle())
+
+                        Button { timer.skip() } label: {
+                            Image(systemName: "forward.fill")
+                        }
+                        .buttonStyle(PomodoroActionButtonStyle())
+                        .help("Skip phase")
+                        .accessibilityLabel("Skip phase")
+                    }
                     .controlSize(.small)
-
-                Button {
-                    timer.skip()
-                } label: {
-                    Image(systemName: "forward.fill")
                 }
-                .liquidGlassButtonStyle(.bordered)
-                .controlSize(.small)
-                .help("Skip phase")
             }
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Durations")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-
-                HStack(spacing: 16) {
-                    durationRow("Focus", phase: .focus)
-                    Divider()
-                        .frame(height: 34)
-                    durationRow("Short break", phase: .shortBreak)
-                }
-                .frame(maxWidth: .infinity)
+            Divider()
+            HStack(spacing: 16) {
+                durationRow("Focus", phase: .focus)
+                durationRow("Break", phase: .shortBreak)
             }
-            .padding(.top, 2)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .liquidGlassPane(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(14)
         .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.bottom, 8)
     }
 
     private func durationRow(_ title: String, phase: PomodoroPhase) -> some View {
-        VStack(spacing: 6) {
+        HStack(spacing: 6) {
             Text(title)
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(.secondary)
@@ -108,9 +119,9 @@ struct PomodoroTimerView: View {
                 .frame(width: 18, height: 18)
                 .help("Decrease \(title.lowercased()) duration")
 
-                Text("\(timer.duration(for: phase))")
+                Text("\(timer.duration(for: phase))m")
                     .font(.caption2.monospacedDigit())
-                    .frame(width: 24)
+                    .frame(width: 30)
                 Button {
                     timer.setDuration(timer.duration(for: phase) + 1, for: phase)
                 } label: {
@@ -125,10 +136,26 @@ struct PomodoroTimerView: View {
         .frame(maxWidth: .infinity)
         .padding(.vertical, 4)
     }
+}
 
-    private func format(_ seconds: TimeInterval) -> String {
-        let total = max(0, Int(seconds.rounded(.up)))
-        return String(format: "%02d:%02d", total / 60, total % 60)
+/// Draw the moving panel's actions in SwiftUI. Native glass buttons export
+/// separate effect layers to the window, escaping clips and adding glass
+/// morphing work during the reveal. These buttons move with the whole card.
+private struct PomodoroActionButtonStyle: ButtonStyle {
+    var prominent = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(prominent ? Color.white : Color.primary)
+            .padding(.horizontal, 10)
+            .frame(height: 25)
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(prominent ? Color.accentColor : Color.primary.opacity(0.08))
+            }
+            .opacity(configuration.isPressed ? 0.65 : 1)
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 

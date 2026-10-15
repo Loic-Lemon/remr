@@ -35,6 +35,9 @@ final class PomodoroTimerStore: ObservableObject {
     @Published private(set) var now = Date()
     @Published private(set) var focusMinutes: Int
     @Published private(set) var shortBreakMinutes: Int
+    /// Separate from the one-second UI clock so the status item only redraws
+    /// when its ten-second countdown changes or the timer starts/stops.
+    @Published private(set) var menuBarTitle: String? = nil
 
     private let defaults: UserDefaults
     private var ticker: Timer?
@@ -65,9 +68,12 @@ final class PomodoroTimerStore: ObservableObject {
             return Date(timeIntervalSince1970: seconds)
         }
 
-        ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        let ticker = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
+        ticker.tolerance = 0.1
+        RunLoop.main.add(ticker, forMode: .common)
+        self.ticker = ticker
         if isRunning { tick() }
     }
 
@@ -88,12 +94,21 @@ final class PomodoroTimerStore: ObservableObject {
         return max(0, endDate.timeIntervalSince(now))
     }
 
+    var formattedRemaining: String {
+        Self.format(remaining)
+    }
+
+    private static func format(_ seconds: TimeInterval) -> String {
+        let total = max(0, Int(seconds.rounded(.up)))
+        return String(format: "%02d:%02d", total / 60, total % 60)
+    }
+
     func start() {
         guard !isRunning else { return }
         completion = nil
         now = Date()
         let remaining = pausedRemaining > 0 ? pausedRemaining : currentDuration
-        endDate = Date().addingTimeInterval(remaining)
+        endDate = now.addingTimeInterval(remaining)
         isRunning = true
         persist()
     }
@@ -155,18 +170,28 @@ final class PomodoroTimerStore: ObservableObject {
         }
     }
 
-    private func tick() {
-        now = Date()
-        guard isRunning, let endDate, endDate <= now else { return }
+    func tick(at date: Date = Date()) {
+        guard isRunning else { return }
+        now = date
+        guard let endDate, endDate <= now else {
+            updateMenuBarTitle()
+            return
+        }
         isRunning = false
         self.endDate = nil
         pausedRemaining = 0
         if phase == .focus { completedFocusSessions += 1 }
-        completion = PomodoroCompletion(phase: phase, completedAt: Date())
+        completion = PomodoroCompletion(phase: phase, completedAt: now)
         persist()
     }
 
+    private func updateMenuBarTitle() {
+        let title = isRunning ? Self.format(ceil(remaining / 10) * 10) : nil
+        if menuBarTitle != title { menuBarTitle = title }
+    }
+
     private func persist() {
+        updateMenuBarTitle()
         defaults.set(phase.rawValue, forKey: phaseKey)
         defaults.set(isRunning, forKey: runningKey)
         defaults.set(endDate?.timeIntervalSince1970, forKey: endDateKey)

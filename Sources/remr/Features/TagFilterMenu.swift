@@ -2,9 +2,8 @@ import AppKit
 import SwiftUI
 
 /// Tag-filter control beside Search. The picker is hosted in an AppKit
-/// NSPopover rather than an in-window overlay: it cannot be clipped by the
-/// 400pt popover, closes correctly on outside clicks, and opens without the
-/// default popover animation.
+/// NSPopover shared with the other toolbar pickers: it cannot be clipped by
+/// the main surface, owns outside-click dismissal, and opens immediately.
 struct TagFilterMenu: View {
     let allTags: [String]
     /// Reminder count per tag (lowercased), shown beside each row so the
@@ -14,9 +13,15 @@ struct TagFilterMenu: View {
     @Binding var isPresented: Bool
     var onManage: () -> Void = {}
     var isDimmed = false
+    @State private var isHovered = false
     @ObservedObject private var filterStore = FilterStore.shared
     @ObservedObject private var tagStore = TagStore.shared
 
+
+    private var controlColor: Color {
+        filterStore.tag.map { tagStore.color(for: $0) }
+            ?? (isHovered || isPresented ? .primary : .secondary)
+    }
 
     var body: some View {
         Button {
@@ -31,16 +36,29 @@ struct TagFilterMenu: View {
                     .font(.system(size: 9, weight: .semibold))
             }
             .font(.caption.weight(.medium))
-            .foregroundStyle(filterStore.tag.map { tagStore.color(for: $0) } ?? Color.secondary)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .frame(minHeight: 30)
-            .liquidGlassCapsule(dimmed: isDimmed)
+            .foregroundStyle(controlColor)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(DropdownTriggerStyle(isPresented: isPresented))
+        .opacity(isDimmed ? 0.45 : 1)
+        .onHover { isHovered = $0 }
+        .accessibilityLabel("Select tags")
+        .overlay(alignment: .bottom) {
+            if isHovered && !isPresented {
+                Text("Select tags")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(.thinMaterial, in: Capsule())
+                    .overlay(Capsule().stroke(AppPalette.controlStroke, lineWidth: 0.5))
+                    .fixedSize()
+                    .offset(y: 23)
+                    .allowsHitTesting(false)
+            }
+        }
         .help(filterStore.tag.map { "Filtered by #\($0) — click to change" } ?? "Filter by tag")
         .background {
-            TagPopoverPresenter(
+            FastPopoverPresenter(
                 isPresented: isPresented,
                 content: AnyView(
                     TagPickerContent(
@@ -88,7 +106,9 @@ private struct TagPickerContent: View {
     @ObservedObject private var tagStore = TagStore.shared
     @State private var search = ""
     @State private var highlighted: PickerHighlight?
+    @State private var keyboardScrollTarget: PickerHighlight?
     @State private var keyMonitor: Any?
+    @State private var pickerWindow: NSWindow?
     @FocusState private var searchFocused: Bool
 
     private var activeTag: String? { filterStore.tag }
@@ -135,7 +155,7 @@ private struct TagPickerContent: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
             .frame(minHeight: 30)
-            .liquidGlassField(in: Capsule())
+            .liquidGlassField(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .padding(8)
 
             Divider()
@@ -169,11 +189,9 @@ private struct TagPickerContent: View {
                     .padding(.vertical, 5)
                 }
                 .scrollIndicators(.hidden)
-                .onChange(of: highlighted) { _ in
-                    guard let highlighted else { return }
-                    withAnimation(.easeOut(duration: 0.12)) {
-                        proxy.scrollTo(rowID(highlighted), anchor: .center)
-                    }
+                .onChange(of: keyboardScrollTarget) { target in
+                    guard let target else { return }
+                    proxy.scrollTo(rowID(target))
                 }
             }
 
@@ -191,19 +209,9 @@ private struct TagPickerContent: View {
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
-                .contentShape(Rectangle())
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .background {
-                    if highlighted == .manage {
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(AppPalette.controlTint)
-                    }
-                }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 4)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(DropdownRowStyle(highlighted: highlighted == .manage))
+            .padding(7)
             .help("Manage tags")
             .onHover { hovering in
                 highlighted = hovering ? .manage : (highlighted == .manage ? nil : highlighted)
@@ -211,6 +219,7 @@ private struct TagPickerContent: View {
         }
         .frame(width: 252, height: 300)
         .liquidGlassGrouping()
+        .background(PickerWindowProbe { pickerWindow = $0 })
         .onAppear {
             DispatchQueue.main.async {
                 searchFocused = true
@@ -222,6 +231,7 @@ private struct TagPickerContent: View {
         }
         .onChange(of: search) { _ in
             highlighted = nil
+            keyboardScrollTarget = nil
         }
     }
 
@@ -245,17 +255,8 @@ private struct TagPickerContent: View {
                         .foregroundStyle(Color.accentColor)
                 }
             }
-            .contentShape(Rectangle())
-            .padding(.horizontal, 9)
-            .padding(.vertical, 6)
-            .background {
-                if highlighted == .all {
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(AppPalette.controlTint)
-                }
-            }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(DropdownRowStyle(selected: activeTag == nil, highlighted: highlighted == .all))
         .accessibilityLabel("All tags — clear filter")
         .onHover { hovering in
             highlighted = hovering ? .all : (highlighted == .all ? nil : highlighted)
@@ -287,29 +288,12 @@ private struct TagPickerContent: View {
                         .foregroundStyle(Color.accentColor)
                 }
             }
-            .contentShape(Rectangle())
-            .padding(.horizontal, 9)
-            .padding(.vertical, 6)
-            .background {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(rowFill(for: tag))
-            }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(DropdownRowStyle(selected: tag == activeTag, highlighted: highlighted == .tag(tag)))
         .accessibilityLabel("#\(tag)")
         .onHover { hovering in
             highlighted = hovering ? .tag(tag) : (highlighted == .tag(tag) ? nil : highlighted)
         }
-    }
-
-    private func rowFill(for tag: String) -> Color {
-        if tag == activeTag {
-            return Color.accentColor.opacity(0.12)
-        }
-        if highlighted == .tag(tag) {
-            return AppPalette.controlTint
-        }
-        return .clear
     }
 
     // MARK: - Keyboard
@@ -322,6 +306,7 @@ private struct TagPickerContent: View {
         // so the captured struct copy always reads current values; the monitor
         // is removed on disappear, breaking the dispatcher → closure cycle.
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { event in
+            guard let pickerWindow, event.window === pickerWindow else { return event }
             switch event.keyCode {
             case 53: // Esc — clear the search first, then close.
                 if !search.isEmpty {
@@ -365,6 +350,7 @@ private struct TagPickerContent: View {
         }
         let next = min(max(current + delta, 0), rows.count)
         highlighted = next == rows.count ? .manage : (rows[next].map(PickerHighlight.tag) ?? .all)
+        keyboardScrollTarget = highlighted
     }
 
     private func activateHighlight() {
@@ -384,94 +370,28 @@ private struct TagPickerContent: View {
     }
 }
 
-/// Presents SwiftUI content in an unanimated, transient native popover.
-private struct TagPopoverPresenter: NSViewRepresentable {
-    let isPresented: Bool
-    let content: AnyView
-    let onDismiss: () -> Void
+/// Tracks the picker window so its keyboard monitor cannot intercept other views.
+private struct PickerWindowProbe: NSViewRepresentable {
+    let onWindow: (NSWindow?) -> Void
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onDismiss: onDismiss)
-    }
-
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView(frame: .zero)
-        context.coordinator.anchor = view
+    func makeNSView(context: Context) -> Probe {
+        let view = Probe()
+        view.onWindow = onWindow
         return view
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {
-        context.coordinator.anchor = nsView
-        context.coordinator.onDismiss = onDismiss
-        context.coordinator.update(isPresented: isPresented, content: content)
+    func updateNSView(_ view: Probe, context: Context) {
+        view.onWindow = onWindow
     }
 
-    final class Coordinator: NSObject, NSPopoverDelegate {
-        weak var anchor: NSView?
-        var onDismiss: () -> Void
-        private var popover: NSPopover?
-
-        init(onDismiss: @escaping () -> Void) {
-            self.onDismiss = onDismiss
-        }
-
-        func update(isPresented: Bool, content: AnyView) {
-            if isPresented {
-                let popover = self.popover ?? makePopover(content: content)
-                self.popover = popover
-                if let hosting = popover.contentViewController as? NSHostingController<AnyView> {
-                    hosting.rootView = appearanceAwareContent(content)
-                }
-                Task { @MainActor [weak popover] in
-                    popover?.contentViewController?.view.window?.appearance = SettingsStore.shared.appearance.nsAppearance
-                }
-
-                guard !popover.isShown, let anchor, !anchor.bounds.isEmpty else { return }
-                DispatchQueue.main.async { [weak popover, weak anchor] in
-                    guard let popover, let anchor,
-                          !popover.isShown, !anchor.bounds.isEmpty else { return }
-                    popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
-                    Task { @MainActor [weak popover] in
-                        popover?.contentViewController?.view.window?.appearance = SettingsStore.shared.appearance.nsAppearance
-                    }
-                }
-            } else if self.popover?.isShown == true {
-                self.popover?.performClose(nil)
+    final class Probe: NSView {
+        var onWindow: ((NSWindow?) -> Void)?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.onWindow?(self.window)
             }
-        }
-
-        private func makePopover(content: AnyView) -> NSPopover {
-            let popover = NSPopover()
-            popover.behavior = .transient
-            popover.animates = false
-            popover.delegate = self
-            popover.contentViewController = NSHostingController(rootView: appearanceAwareContent(content))
-            return popover
-        }
-
-        private func appearanceAwareContent(_ content: AnyView) -> AnyView {
-            let settings = MainActor.assumeIsolated { SettingsStore.shared }
-            return AnyView(content.remrAppearance(using: settings))
-        }
-
-        func popoverDidClose(_ notification: Notification) {
-            // NSPopover closes before the anchor button receives its click.
-            // Do not reset the binding for an anchor click, or the button's
-            // toggle would immediately reopen the popover. Outside clicks
-            // still clear the binding normally.
-            guard !isCurrentEventOnAnchor() else { return }
-            onDismiss()
-        }
-
-        private func isCurrentEventOnAnchor() -> Bool {
-            guard let anchor, let event = NSApp.currentEvent,
-                  event.window === anchor.window else { return false }
-            let point = anchor.convert(event.locationInWindow, from: nil)
-            return anchor.bounds.contains(point)
-        }
-
-        deinit {
-            popover?.close()
         }
     }
 }

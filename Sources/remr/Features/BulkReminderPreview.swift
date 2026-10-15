@@ -199,12 +199,12 @@ struct BulkReminderPreview: View {
 
             if !rows.isEmpty {
                 HStack {
-                    Picker("List for selected", selection: $bulkListIdentifier) {
-                        Text("Choose list").tag("")
-                        ForEach(store.reminderCalendars(), id: \.calendarIdentifier) { calendar in
-                            Text(calendar.title).tag(calendar.calendarIdentifier)
-                        }
-                    }
+                    RemrDropdown(title: "List for selected", selection: $bulkListIdentifier,
+                                 options: [DropdownOption(value: "", title: "Choose list", systemImage: "list.bullet")]
+                                    + store.reminderCalendars().map {
+                                        DropdownOption(value: $0.calendarIdentifier, title: $0.title,
+                                                       systemImage: "list.bullet", color: Color(cgColor: $0.cgColor))
+                                    })
                     .frame(maxWidth: 220)
                     Button("Apply to Selected") {
                         applyBulkList()
@@ -585,18 +585,18 @@ struct BulkReminderPreview: View {
                         .datePickerStyle(.field)
                 }
                 HStack {
-                    Picker("List", selection: listBinding) {
-                        Text("Default list").tag("")
-                        ForEach(store.reminderCalendars(), id: \.calendarIdentifier) { calendar in
-                            Text(calendar.title).tag(calendar.calendarIdentifier)
-                        }
-                    }
-                    Picker("Priority", selection: priorityBinding) {
-                        Text("None").tag(0)
-                        Text("High").tag(1)
-                        Text("Medium").tag(5)
-                        Text("Low").tag(9)
-                    }
+                    RemrDropdown(title: "List", selection: listBinding,
+                                 options: [DropdownOption(value: "", title: "Default list", systemImage: "list.bullet")]
+                                    + store.reminderCalendars().map {
+                                        DropdownOption(value: $0.calendarIdentifier, title: $0.title,
+                                                       systemImage: "list.bullet", color: Color(cgColor: $0.cgColor))
+                                    })
+                    RemrDropdown(title: "Priority", selection: priorityBinding, options: [
+                        DropdownOption(value: 0, title: "None"),
+                        DropdownOption(value: 1, title: "High", systemImage: "exclamationmark.3", color: .red),
+                        DropdownOption(value: 5, title: "Medium", systemImage: "exclamationmark.2", color: .orange),
+                        DropdownOption(value: 9, title: "Low", systemImage: "exclamationmark", color: .blue)
+                    ])
                 }
                 TextField("Location phrase", text: locationBinding)
                     .textFieldStyle(.roundedBorder)

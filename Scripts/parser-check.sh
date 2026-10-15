@@ -11,5 +11,6 @@ swiftc -o "$BIN" \
     "$ROOT/Sources/remr/Core/Parser/ParserDiagnostic.swift" \
     "$ROOT/Sources/remr/Core/Parser/NaturalLanguageParser.swift" \
     "$ROOT/Sources/remr/Core/Parser/SearchParser.swift" \
+    "$ROOT/Sources/remr/Core/Parser/OllamaReminderParser.swift" \
     "$ROOT/Scripts/ParserCheckMain.swift"
 "$BIN"

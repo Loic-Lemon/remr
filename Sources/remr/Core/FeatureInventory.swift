@@ -74,7 +74,7 @@ enum FeatureInventory {
             summary: "Handles & locations, anchored here/my location, and one-shot resolution when a reminder is saved."),
         FeatureInventoryItem(
             name: "Single reminder creation",
-            summary: "Creates reminders from the in-app composer with title, notes, parsed fields, and validation."),
+            summary: "Creates reminders from a compact rounded glass composer matching Search, with title, notes, parsed fields, and validation."),
         FeatureInventoryItem(
             name: "Quick Add",
             summary: "Opens a focused reminder composer from anywhere with a global shortcut."),
@@ -100,8 +100,11 @@ enum FeatureInventory {
             name: "Keyboard navigation",
             summary: "Supports keyboard selection, completion, editing, search, recovery, undo, and focus movement."),
         FeatureInventoryItem(
+            name: "Organized settings",
+            summary: "Groups preferences into four compact tabs with rounded cards, immediate preference changes, and a persistent shortcut save bar. Replaces the reminder controls while open, clips scrolling controls to the viewport, and discovers microphones off the main thread only in the voice section."),
+        FeatureInventoryItem(
             name: "Shortcut customization",
-            summary: "Rebinds in-app actions and both global shortcuts with validation and conflict reporting."),
+            summary: "Uses ⌥Space to open remr by default, with separate global and in-app shortcut groups, wrapping editable keycaps that stay inside narrow panels, validation, and conflict reporting."),
         FeatureInventoryItem(
             name: "Appearance modes",
             summary: "Supports Light, Dark, and Follow System with live application to every window and popover."),
@@ -115,6 +118,30 @@ enum FeatureInventory {
             name: "Reminder popover",
             summary: "Provides the menu bar list, sections, selection, completion, context actions, and sync footer."),
         FeatureInventoryItem(
+            name: "Notch panel",
+            summary: "Opens reminders from the top screen edge with smaller 14-point shoulders, a window-backdrop blur, adaptive native glass on macOS 26, directional light, and a soft black blend into the camera housing."),
+        FeatureInventoryItem(
+            name: "Search field appearance",
+            summary: "Uses matching rounded glass behind crisp search and composer text, compact side spacing, a subtle focus ring, and larger toolbar hover targets."),
+        FeatureInventoryItem(
+            name: "Notch panel motion",
+            summary: "Opens in 280 ms with a fixed-size blur and a moving glass rim, reuses warmed content, refreshes after opening, and reveals reminders only when motion finishes; respects Reduce Motion."),
+        FeatureInventoryItem(
+            name: "Notch panel width",
+            summary: "Adjusts the top-centred panel from 400 to 900 points with live resizing."),
+        FeatureInventoryItem(
+            name: "Notch opening haptic",
+            summary: "Optionally gives a gentle opening tap on compatible trackpads."),
+        FeatureInventoryItem(
+            name: "Little sun review nudge",
+            summary: "The notch widens into two slim menu-bar wings, with a smiling sun continuously waving and gently spinning back and forth on the left and a review action on the right; click to review, dismiss, or let it retract after 18 seconds without taking keyboard focus."),
+        FeatureInventoryItem(
+            name: "Random review intervals",
+            summary: "Chooses a fresh random delay between configurable bounds (90–180 minutes by default), persists the next check-in, pauses presentation while away or busy, and restarts after opening remr."),
+        FeatureInventoryItem(
+            name: "Review nudge preview",
+            summary: "Settings previews the sun immediately and controls whether nudges are enabled and their minimum/maximum delay."),
+        FeatureInventoryItem(
             name: "Pomodoro timer",
             summary: "Runs focus and short-break sessions with adjustable durations and completion controls."),
         FeatureInventoryItem(
@@ -127,8 +154,11 @@ enum FeatureInventory {
             name: "Search query language",
             summary: "Searches reminder text, @lists, #tags, and priority markers, including completed matches."),
         FeatureInventoryItem(
+            name: "List visibility picker",
+            summary: "Opens immediately with searchable lists, live counts, selection states, Show all, and a Select lists hover tooltip."),
+        FeatureInventoryItem(
             name: "Tag filter picker",
-            summary: "Provides a searchable tag dropdown, reminder counts, active-tag chips, and tag management access."),
+            summary: "Provides a searchable tag dropdown with hover and press feedback, a Select tags tooltip, reminder counts, and tag management access."),
         FeatureInventoryItem(
             name: "Archive & recovery",
             summary: "Browses completed and recently deleted reminders with restore and permanent-delete safeguards."),
@@ -136,8 +166,8 @@ enum FeatureInventory {
             name: "Undo safety net",
             summary: "Reverses the latest completion or deletion for a short window from the toast or keyboard."),
         FeatureInventoryItem(
-            name: "Fast popovers",
-            summary: "Uses immediate native popovers with controlled fades for guide, recovery, and tag surfaces."),
+            name: "Dropdown appearance",
+            summary: "Uses rounded glass cards, soft edges and shadows, consistent hover rows, and keyboard navigation for lists, tags, snooze, settings, colors, and action selectors."),
         FeatureInventoryItem(
             name: "Liquid Glass surfaces",
             summary: "Uses native macOS 26 glass with appearance-aware fallback materials on older macOS versions."),
@@ -155,8 +185,14 @@ enum FeatureInventory {
             summary: "Idea: save reusable combinations of search, tag, priority, and date filters.",
             status: .idea),
         FeatureInventoryItem(
+            name: "Calendar notch presentation",
+            summary: "Opens from the primary display's top edge in 220 ms with a prewarmed, reusable calendar layout and its first paint warmed at launch, growing out of the open reminders panel's silhouette when one is on screen (an 80 ms glass handoff, then the shape expands), and returning by shrinking back into that silhouette before the panel fades in over it; keeps the grid out of reveal updates, settles the native glass at full size, then reveals content and Today. Preserves navigation and respects Reduce Motion."),
+        FeatureInventoryItem(
+            name: "Calendar shortcut in remr",
+            summary: "Press C to switch between browsing reminders and the calendar; holding the key does not repeat, text entry and copy shortcuts stay intact, and the binding can be changed in Settings."),
+        FeatureInventoryItem(
             name: "Calendar planning view",
-            summary: "Visualizes reminders on month, week, and day views with snooze, drag-to-reschedule, lane-aligned Gantt bars from today to each due date, a completed toggle, and a double-click detail page with map."),
+            summary: "Visualizes reminders on month, week, and day views with snooze, drag-to-reschedule, lane-aligned Gantt bars from today to each due date, striped shading for days with no reminders or Gantt bar, a completed toggle, and a double-click detail page with map."),
         FeatureInventoryItem(
             name: "Recurring reminder editor",
             summary: "Idea: create and edit recurrence rules directly instead of only displaying recurrence summaries.",

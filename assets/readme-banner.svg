@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="220" viewBox="0 0 1200 220" role="img" aria-labelledby="bannerTitle">
+  <title id="bannerTitle">remr — project banner</title>
+  <defs>
+    <linearGradient id="markGradient" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5EEAD4"/>
+      <stop offset="1" stop-color="#60A5FA"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="220" rx="20" fill="#0E1A2B"/>
+  <g stroke="url(#markGradient)" stroke-width="6" stroke-linecap="round">
+    <line x1="121" y1="110" x2="138" y2="110"/>
+    <line x1="114.9" y1="124.9" x2="126.9" y2="136.9"/>
+    <line x1="100" y1="131" x2="100" y2="148"/>
+    <line x1="85.1" y1="124.9" x2="73.1" y2="136.9"/>
+    <line x1="79" y1="110" x2="62" y2="110"/>
+    <line x1="85.1" y1="95.1" x2="73.1" y2="83.1"/>
+    <line x1="100" y1="89" x2="100" y2="72"/>
+    <line x1="114.9" y1="95.1" x2="126.9" y2="83.1"/>
+  </g>
+  <circle cx="100" cy="110" r="14" fill="url(#markGradient)"/>
+  <text x="168" y="126" font-family="Arial, Helvetica, sans-serif" font-size="54" font-weight="600" letter-spacing="-1" fill="#F1F5F9">remr</text>
+  <text x="1140" y="117" text-anchor="end" font-family="Arial, Helvetica, sans-serif" font-size="20" fill="#8B9BB4">macOS &#183; Swift</text>
+  <text x="600" y="202" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="15" fill="#64748B">github.com/Loic-Lemon</text>
+</svg>

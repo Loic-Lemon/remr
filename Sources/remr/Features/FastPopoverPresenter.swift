@@ -1,36 +1,66 @@
 import AppKit
 import SwiftUI
 
-/// Native popover presentation shared by the guide and recovery surfaces.
-/// Opening is immediate; controlled closes fade the window out briefly before
-/// dismissing it so the arrow and shadow leave with the content.
+/// Native popover presentation shared by the toolbar pickers, the guide and
+/// recovery surfaces. A real `NSPopover` gives the card its own window above
+/// everything else, the native Liquid Glass surface on macOS 26, its own
+/// outside-click dismissal and a shadow that tracks the content, instead of a
+/// hand-positioned borderless panel that has to reimplement all four.
 struct FastPopoverPresenter: NSViewRepresentable {
     let isPresented: Bool
     let content: AnyView
     let onDismiss: () -> Void
+    /// Show the card above the anchor instead of below it.
+    var preferAbove = false
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onDismiss: onDismiss)
-    }
+    func makeCoordinator() -> Coordinator { Coordinator(onDismiss: onDismiss) }
 
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView(frame: .zero)
+    func makeNSView(context: Context) -> AnchorView {
+        let view = AnchorView()
+        view.onLayout = { [weak coordinator = context.coordinator] in coordinator?.showIfReady() }
         context.coordinator.anchor = view
         return view
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {
-        context.coordinator.anchor = nsView
-        context.coordinator.onDismiss = onDismiss
-        context.coordinator.update(isPresented: isPresented, content: content)
+    func updateNSView(_ view: AnchorView, context: Context) {
+        let coordinator = context.coordinator
+        coordinator.anchor = view
+        coordinator.onDismiss = onDismiss
+        coordinator.preferAbove = preferAbove
+        coordinator.update(isPresented: isPresented, content: content)
+    }
+
+    static func dismantleNSView(_ view: AnchorView, coordinator: Coordinator) {
+        view.onLayout = nil
+        coordinator.close()
+    }
+
+    /// The trigger's own view. The popover anchors to it, so re-anchor whenever
+    /// SwiftUI lays it out again — the notch surface resizes as it opens.
+    final class AnchorView: NSView {
+        var onLayout: (() -> Void)?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            scheduleLayout()
+        }
+        override func layout() {
+            super.layout()
+            scheduleLayout()
+        }
+        private func scheduleLayout() {
+            DispatchQueue.main.async { [weak self] in self?.onLayout?() }
+        }
     }
 
     final class Coordinator: NSObject, NSPopoverDelegate {
         weak var anchor: NSView?
         var onDismiss: () -> Void
+        var preferAbove = false
         private var popover: NSPopover?
         private var localMonitor: Any?
         private var globalMonitor: Any?
+        private var observers: [NSObjectProtocol] = []
+        private var wantsPresented = false
         private var closeGeneration = 0
         private var isClosing = false
 
@@ -39,10 +69,10 @@ struct FastPopoverPresenter: NSViewRepresentable {
         }
 
         func update(isPresented: Bool, content: AnyView) {
+            wantsPresented = isPresented
             if isPresented {
                 closeGeneration &+= 1
                 isClosing = false
-
                 let popover = self.popover ?? makePopover(content: content)
                 self.popover = popover
                 if let hosting = popover.contentViewController as? NSHostingController<AnyView> {
@@ -50,16 +80,25 @@ struct FastPopoverPresenter: NSViewRepresentable {
                 }
                 installMonitors()
                 applyAppearance(to: popover)
-
-                guard !popover.isShown, let anchor, !anchor.bounds.isEmpty else { return }
-                DispatchQueue.main.async { [weak self, weak popover, weak anchor] in
-                    guard let self, let popover, let anchor,
-                          !popover.isShown, !anchor.bounds.isEmpty else { return }
-                    popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
-                    self.applyAppearance(to: popover)
-                }
+                showIfReady()
             } else if let popover, popover.isShown, !isClosing {
                 fadeClose(popover)
+            }
+        }
+
+        /// The anchor can be laid out (and its window revealed) after the
+        /// presentation flag flips, so the update path and the layout hook both
+        /// funnel here rather than calling `show` from one place.
+        func showIfReady() {
+            guard wantsPresented, let popover, !popover.isShown else { return }
+            guard let anchor, anchor.window != nil, !anchor.bounds.isEmpty else { return }
+            DispatchQueue.main.async { [weak self, weak popover, weak anchor] in
+                guard let self, let popover, let anchor,
+                      self.wantsPresented, !popover.isShown,
+                      anchor.window != nil, !anchor.bounds.isEmpty else { return }
+                popover.show(relativeTo: anchor.bounds, of: anchor,
+                             preferredEdge: self.preferAbove ? .maxY : .minY)
+                self.applyAppearance(to: popover)
             }
         }
 
@@ -68,17 +107,24 @@ struct FastPopoverPresenter: NSViewRepresentable {
             popover.behavior = .applicationDefined
             popover.animates = true
             popover.delegate = self
-            popover.contentViewController = NSHostingController(rootView: appearanceAwareContent(content))
+            let hosting = NSHostingController(rootView: appearanceAwareContent(content))
+            // The pickers change height with their content (list counts, tag
+            // matches); without this the popover keeps the first size.
+            hosting.sizingOptions = [.preferredContentSize]
+            popover.contentViewController = hosting
             return popover
         }
+
         private func appearanceAwareContent(_ content: AnyView) -> AnyView {
             let settings = MainActor.assumeIsolated { SettingsStore.shared }
-            return AnyView(content.remrAppearance(using: settings))
+            return AnyView(content.remrAppearance(using: settings)
+                .onExitCommand(perform: onDismiss))
         }
 
         private func applyAppearance(to popover: NSPopover) {
             Task { @MainActor [weak popover] in
-                popover?.contentViewController?.view.window?.appearance = SettingsStore.shared.appearance.nsAppearance
+                popover?.contentViewController?.view.window?.appearance =
+                    SettingsStore.shared.appearance.nsAppearance
             }
         }
 
@@ -91,8 +137,8 @@ struct FastPopoverPresenter: NSViewRepresentable {
                    event.window === popoverWindow {
                     return event
                 }
-                // Clicks in our own presented sheets (e.g. the
-                // "Delete Forever?" confirmation dialog) are part of the
+                // Clicks in our own presented sheets (e.g. the "Delete
+                // Forever?" confirmation dialog) are part of the
                 // popover's flow — a click there must not dismiss it.
                 if let clicked = event.window {
                     if clicked.isSheet { return event }
@@ -107,17 +153,26 @@ struct FastPopoverPresenter: NSViewRepresentable {
                         return event
                     }
                 }
-                Task { @MainActor [weak self] in
-                    self?.onDismiss()
-                }
+                DispatchQueue.main.async { [weak self] in self?.dismiss() }
                 return event
             }
 
             globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    self?.onDismiss()
-                }
+                DispatchQueue.main.async { [weak self] in self?.dismiss() }
             }
+
+            // The card must not outlive the surface that owns it.
+            for name in [NSApplication.didResignActiveNotification, Notification.Name.remrPopoverClosing] {
+                observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                    self?.dismiss()
+                })
+            }
+        }
+
+        private func dismiss() {
+            guard wantsPresented else { return }
+            wantsPresented = false
+            onDismiss()
         }
 
         private func fadeClose(_ popover: NSPopover) {
@@ -148,13 +203,45 @@ struct FastPopoverPresenter: NSViewRepresentable {
 
         func popoverDidClose(_ notification: Notification) {
             isClosing = false
-            onDismiss()
+            // An externally closed popover (Escape, the anchor's own state
+            // machine) must not leave the presentation flag stuck on.
+            if wantsPresented {
+                wantsPresented = false
+                onDismiss()
+            }
+        }
+
+        func close() {
+            wantsPresented = false
+            isClosing = false
+            if let localMonitor { NSEvent.removeMonitor(localMonitor) }
+            if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
+            localMonitor = nil
+            globalMonitor = nil
+            for observer in observers { NotificationCenter.default.removeObserver(observer) }
+            observers.removeAll()
+            popover?.performClose(nil)
+            popover = nil
         }
 
         deinit {
             if let localMonitor { NSEvent.removeMonitor(localMonitor) }
             if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
+            for observer in observers { NotificationCenter.default.removeObserver(observer) }
             popover?.close()
+        }
+    }
+}
+
+extension View {
+    /// Uses the same card chrome for all app-owned popover content.
+    func remrPopover<Content: View>(isPresented: Binding<Bool>, arrowEdge: Edge = .bottom,
+                                   @ViewBuilder content: () -> Content) -> some View {
+        background {
+            FastPopoverPresenter(isPresented: isPresented.wrappedValue,
+                                 content: AnyView(content()),
+                                 onDismiss: { isPresented.wrappedValue = false },
+                                 preferAbove: arrowEdge == .bottom)
         }
     }
 }

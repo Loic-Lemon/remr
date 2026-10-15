@@ -133,7 +133,7 @@ final class KeyBindingsTests: XCTestCase {
 
     func testAssignRejectsDuplicate() {
         let (store, _) = makeStore()
-        let duplicate = KeyCombo([.modifier(.option), .modifier(.command), .key(15)])  // default togglePopover
+        let duplicate = store.combo(for: .togglePopover)
         let result = store.assign(duplicate, to: .focusSearch)
         XCTAssertFalse(result)
         XCTAssertNotNil(store.errorMessage)

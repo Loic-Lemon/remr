@@ -23,6 +23,10 @@ struct KeyboardContext {
     var selectionIsReminder: Bool
     var selectionIsCompleted: Bool
     var hasUndo: Bool
+    var pomodoroEnabled: Bool = false
+    var pomodoroPresented: Bool = false
+    var calendarPresented: Bool = false
+    var emptyTitleFieldFocused: Bool = false
 }
 
 /// A key event translated into an action for the executor to run.
@@ -38,12 +42,16 @@ enum KeyAction: Equatable {
     case enterListMode           // Tab from search, Shift+Tab from title
     case clearSearchOrClose      // Esc with search text → clear; else close
     case closePopover
+    case openCalendar            // Local calendar shortcut while browsing reminders
+    case showMainReminders       // Same shortcut returns from the calendar
     case activateRow             // Enter: complete / restore / toggle header
     case openRow                 // ⌘Enter: open in Reminders
     case deleteRow               // ⌫: delete / delete forever
     case editRow                 // Edit the selected reminder
     case snoozeRow               // Snooze the selected reminder
     case undo                    // Undo the most recent undoable mutation
+    case togglePomodoro          // P opens or closes the Pomodoro section
+    case togglePomodoroRunning   // Return while the Pomodoro section is open: start, or pause if running
 }
 
 enum KeyboardRouter {
@@ -52,6 +60,21 @@ enum KeyboardRouter {
                        heldKeyCodes: Set<UInt16>,
                        context: KeyboardContext,
                        bindings: [BindableAction: KeyCombo] = DefaultBindings.all) -> KeyAction {
+        let noFieldFocused = !context.textFieldFocused && !context.searchFieldFocused
+        // The open timer owns P and Return even if the blurred editor
+        // retained focus. Modified chords keep their usual behavior.
+        // A key-up can be lost when the popover closes or loses focus. Bare
+        // timer shortcuts depend on current modifiers, not remembered letters.
+        let hasModifier = heldKeyCodes.contains { ModifierKey.canonicalKeyCode(for: $0) != nil }
+        if context.pomodoroEnabled, !hasModifier {
+            if context.pomodoroPresented {
+                if keyCode == 35 { return .togglePomodoro }
+                if keyCode == 36 || keyCode == 76 { return .togglePomodoroRunning }
+            } else if keyCode == 35, noFieldFocused || context.emptyTitleFieldFocused {
+                return .togglePomodoro
+            }
+        }
+
         // Tab matrix first, hard-coded — Tab is not bindable, so custom bindings can't claim it.
         if keyCode == 48 {
             if heldKeyCodes.contains(ModifierKey.shift.keyCode) {
@@ -62,8 +85,6 @@ enum KeyboardRouter {
             if context.textFieldFocused { return .none } // text view owns Tab (dropdown accept, else onFocusForward)
             return context.searchFieldFocused ? .enterListMode : .focusTitle
         }
-
-        let noFieldFocused = !context.textFieldFocused && !context.searchFieldFocused
 
         // Chord match — exact held-key-set equality, completed by a plain key
         // (modifiers-first convention: a modifier keyDown that tops up the set
@@ -77,6 +98,10 @@ enum KeyboardRouter {
         let combo = entry.value
 
         switch action {
+        case .openCalendarInApp:
+            guard noFieldFocused else { return .none }
+            return context.calendarPresented ? .showMainReminders : .openCalendar
+
         case .focusSearch:
             // Modifier chords (⌘F) focus from anywhere; bare keys ("/") only
             // when no field is focused, so typing a slash isn't swallowed.

@@ -24,6 +24,17 @@
 	<string>13.0</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.local.remr</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>remr</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSRemindersUsageDescription</key>
 	<string>remr needs access to your Reminders to show, create, and manage your reminders.</string>
 	<key>NSMicrophoneUsageDescription</key>

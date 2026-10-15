@@ -84,7 +84,7 @@ struct ReminderDetailView: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Reminder details")
         .onExitCommand(perform: onClose)
-        .popover(isPresented: $showSnoozePicker, arrowEdge: .top) {
+        .remrPopover(isPresented: $showSnoozePicker, arrowEdge: .top) {
             SnoozeDatePickerView(initialDate: dueDate ?? defaultSnoozeDate(),
                                  initialHasTime: !isAllDay,
                                  onCancel: { showSnoozePicker = false },
@@ -426,33 +426,42 @@ struct ReminderDetailView: View {
                 Label("Edit", systemImage: "pencil")
             }
             .liquidGlassButtonStyle(.borderedProminent, prominent: true)
-            Menu {
-                snoozeMenuItems(for: current, actions: snoozeActions)
-                Divider()
-                Button("Duplicate") { onDuplicate(current) }
-                Button("Copy Title") { onCopyTitle(current) }
-                Menu("Move to List") {
-                    Button("Default list") { onMoveToList(current, nil) }
-                    Divider()
-                    ForEach(store.reminderCalendars(), id: \.calendarIdentifier) { calendar in
-                        Button(calendar.title) { onMoveToList(current, calendar.calendarIdentifier) }
-                    }
-                }
-                Divider()
-                Button("Delete", role: .destructive) { onDelete(current) }
-            } label: {
-                Image(systemName: "ellipsis.circle")
-                    .font(.system(size: 15))
+            RemrActionMenu(title: "Reminder actions", actions: reminderActions(current)) {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 26, height: 24)
-                    .contentShape(Rectangle())
+                    .frame(width: 18, height: 24)
             }
-            .menuStyle(.borderlessButton)
             .fixedSize()
             .help("More actions")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
+    }
+
+    private func reminderActions(_ reminder: EKReminder) -> [DropdownAction] {
+        [
+            DropdownAction(title: "Snooze", systemImage: "clock", children: [
+                DropdownAction(title: "1 hour", systemImage: "clock") { snoozeActions.onSnooze(reminder, .oneHour) },
+                DropdownAction(title: "Later today", systemImage: "sun.max") { snoozeActions.onSnooze(reminder, .laterToday) },
+                DropdownAction(title: "Tomorrow morning", systemImage: "sunrise") { snoozeActions.onSnooze(reminder, .tomorrowMorning) },
+                DropdownAction(title: "Tomorrow evening", systemImage: "sunset") { snoozeActions.onSnooze(reminder, .tomorrowEvening) },
+                DropdownAction(title: "Next Monday", systemImage: "calendar") { snoozeActions.onSnooze(reminder, .nextMonday) },
+                DropdownAction(title: "This weekend", systemImage: "moon.zzz") { snoozeActions.onSnooze(reminder, .thisWeekend) },
+                DropdownAction(title: "Pick date/time…", systemImage: "calendar.badge.clock") { snoozeActions.onCustomSnooze(reminder) },
+                DropdownAction(title: "Clear due date", systemImage: "xmark.circle") { snoozeActions.onClearDue(reminder) }
+            ]),
+            DropdownAction(title: "Duplicate", systemImage: "plus.square.on.square") { onDuplicate(reminder) },
+            DropdownAction(title: "Copy Title", systemImage: "doc.on.doc") { onCopyTitle(reminder) },
+            DropdownAction(title: "Move to List", systemImage: "list.bullet", children:
+                [DropdownAction(title: "Default list") { onMoveToList(reminder, nil) }]
+                + store.reminderCalendars().map { calendar in
+                    DropdownAction(title: calendar.title, systemImage: "list.bullet") {
+                        onMoveToList(reminder, calendar.calendarIdentifier)
+                    }
+                }),
+            DropdownAction(title: "Delete", systemImage: "trash", destructive: true) { onDelete(reminder) }
+        ]
     }
 
     /// The drawn completion circle matching the main list rows: accent fill

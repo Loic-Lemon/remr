@@ -34,8 +34,9 @@ struct GuideView: View {
                         GuideRow(example: "Parser warning", explanation: "Unknown lists are shown without blocking a valid reminder")
                     }
                     GuideSection(title: "Keyboard") {
-                        GuideRow(example: "⌥⌘R", explanation: "Open remr from anywhere (editable in Settings)")
+                        GuideRow(example: "⌥Space", explanation: "Open remr from anywhere (editable in Settings)")
                         GuideRow(example: "⌥⌘N", explanation: "Quick add from anywhere (editable in Settings)")
+                        GuideRow(example: "C", explanation: "Switch between reminders and the calendar")
                         GuideRow(example: "Tab", explanation: "Next field: title → notes → search → list")
                         GuideRow(example: "Enter", explanation: "Complete (restore, expand a tab)")
                         GuideRow(example: "⌘⏎", explanation: "Open in Reminders")

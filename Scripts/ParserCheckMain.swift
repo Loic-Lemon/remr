@@ -9,6 +9,14 @@
 
 import Foundation
 
+// Test-only stub for the parser's usage instrumentation.
+@MainActor
+final class OllamaUsageStore {
+    static let shared = OllamaUsageStore()
+    func recordRequest(duration: TimeInterval) {}
+    func recordError() {}
+}
+
 @main
 struct ParserCheck {
     static func main() {
@@ -586,6 +594,36 @@ struct ParserCheck {
     do {
         let notes = "Project context\n#work\n#ongoing"
         checkEqual(NaturalLanguageParser.removingTag("ongoing", from: notes), "Project context\n#work", "43 notes removal")
+    }
+
+    // 44. numbered Markdown items keep their nested bullets
+    do {
+        let items = BulkMarkdownParser.items(from: """
+        1. Prepare the presentation
+           - Confirm the agenda
+           - Send the invitations
+
+        2. Buy groceries
+        - Milk
+        - Bread
+        """)
+        checkEqual(items.map(\.text), [
+            "Prepare the presentation\n- Confirm the agenda\n- Send the invitations",
+            "Buy groceries\n- Milk\n- Bread"
+        ], "44 numbered items keep bullets")
+    }
+
+    // 45. every numbered marker starts a new reminder
+    do {
+        let items = BulkMarkdownParser.items(from: "1. Parent\n   - Context\n   1. Child\n2) Final")
+        checkEqual(items.map(\.text), ["Parent\n- Context", "Child", "Final"],
+                   "45 every number starts an item")
+    }
+
+    // 46. bullet-only Markdown remains backward compatible
+    do {
+        let items = BulkMarkdownParser.items(from: "- Buy milk\n- Call Alex")
+        checkEqual(items.map(\.text), ["Buy milk", "Call Alex"], "46 bullet-only input")
     }
 
     print("Parser check: \(passed) passed, \(failures) failed")

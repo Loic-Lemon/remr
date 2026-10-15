@@ -192,6 +192,18 @@ final class SettingsStore: ObservableObject {
     /// The app appearance, applied immediately and persisted independently of
     /// keyboard binding drafts.
     @Published private(set) var appearance: AppearanceMode
+    /// Opens the main popover centered at the top of the main display (below
+    /// the notch) instead of anchored under the menu bar icon. The status item
+    /// itself never moves.
+    @Published private(set) var notchPopover: Bool
+    /// Width of the notch panel. Wider than the 400pt popover because the
+    /// panel has no menu-bar neighbour to stay clear of.
+    @Published private(set) var notchPanelWidth: CGFloat
+    /// A gentle trackpad tap when the notch panel opens.
+    @Published private(set) var notchHapticEnabled: Bool
+    @Published private(set) var reviewNudgesEnabled: Bool
+    @Published private(set) var reviewNudgeMinimumMinutes: Double
+    @Published private(set) var reviewNudgeMaximumMinutes: Double
     /// Menu bar icon symbol (SF Symbol name).
     @Published private(set) var menuBarIconSymbol: MenuBarIconSymbol
     /// Menu bar icon style.
@@ -231,6 +243,12 @@ final class SettingsStore: ObservableObject {
     private let defaults: UserDefaults
     private let bindingsKey = "remr.keyBindings"
     private let appearanceKey = "remr.appearance"
+    private let notchPopoverKey = "remr.notchPopover"
+    private let notchPanelWidthKey = "remr.notchPanelWidth"
+    private let notchHapticEnabledKey = "remr.notchHapticEnabled"
+    private let reviewNudgesEnabledKey = "remr.reviewNudgesEnabled"
+    private let reviewNudgeMinimumKey = "remr.reviewNudgeMinimumMinutes"
+    private let reviewNudgeMaximumKey = "remr.reviewNudgeMaximumMinutes"
     private let menuBarIconSymbolKey = "remr.menuBarIconSymbol"
     private let menuBarIconStyleKey = "remr.menuBarIconStyle"
     private let menuBarIconBadgeKey = "remr.menuBarIconBadge"
@@ -254,6 +272,15 @@ final class SettingsStore: ObservableObject {
         self.defaults = defaults
         bindings = Self.load(defaults: defaults, bindingsKey: bindingsKey)
         appearance = AppearanceMode(rawValue: defaults.string(forKey: appearanceKey) ?? "") ?? .system
+        notchPopover = defaults.object(forKey: notchPopoverKey) as? Bool ?? false
+        notchPanelWidth = Self.clampWidth(CGFloat(defaults.object(forKey: notchPanelWidthKey) as? Double ?? 560))
+        notchHapticEnabled = defaults.object(forKey: notchHapticEnabledKey) as? Bool ?? true
+        reviewNudgesEnabled = defaults.object(forKey: reviewNudgesEnabledKey) as? Bool ?? true
+        let minimum = ReviewNudgeTiming.clampedMinutes(
+            defaults.object(forKey: reviewNudgeMinimumKey) as? Double ?? 90, fallback: 90)
+        reviewNudgeMinimumMinutes = minimum
+        reviewNudgeMaximumMinutes = max(minimum, ReviewNudgeTiming.clampedMinutes(
+            defaults.object(forKey: reviewNudgeMaximumKey) as? Double ?? 180, fallback: 180))
         menuBarIconSymbol = MenuBarIconSymbol(rawValue: defaults.string(forKey: menuBarIconSymbolKey) ?? "") ?? .checklist
         menuBarIconStyle = MenuBarIconStyle.load(rawValue: defaults.string(forKey: menuBarIconStyleKey))
         menuBarIconBadge = MenuBarIconBadge(rawValue: defaults.string(forKey: menuBarIconBadgeKey) ?? "") ?? .none
@@ -275,6 +302,58 @@ final class SettingsStore: ObservableObject {
         guard self.appearance != appearance else { return }
         self.appearance = appearance
         defaults.set(appearance.rawValue, forKey: appearanceKey)
+    }
+
+    func setNotchPopover(_ enabled: Bool) {
+        guard notchPopover != enabled else { return }
+        notchPopover = enabled
+        defaults.set(enabled, forKey: notchPopoverKey)
+    }
+
+    func setNotchPanelWidth(_ width: CGFloat) {
+        let clamped = Self.clampWidth(width)
+        guard notchPanelWidth != clamped else { return }
+        notchPanelWidth = clamped
+        defaults.set(Double(clamped), forKey: notchPanelWidthKey)
+    }
+
+    /// Keep the panel between the popover's own width and a comfortable
+    /// maximum, so it always has room for the content and stays on screen.
+    static let notchPanelWidthRange: ClosedRange<CGFloat> = 400...900
+
+    func setNotchHapticEnabled(_ enabled: Bool) {
+        guard notchHapticEnabled != enabled else { return }
+        notchHapticEnabled = enabled
+        defaults.set(enabled, forKey: notchHapticEnabledKey)
+    }
+
+    func setReviewNudgesEnabled(_ enabled: Bool) {
+        guard reviewNudgesEnabled != enabled else { return }
+        reviewNudgesEnabled = enabled
+        defaults.set(enabled, forKey: reviewNudgesEnabledKey)
+    }
+
+    func setReviewNudgeMinimumMinutes(_ value: Double) {
+        let minutes = ReviewNudgeTiming.clampedMinutes(value, fallback: 90)
+        reviewNudgeMinimumMinutes = minutes
+        if reviewNudgeMaximumMinutes < minutes { reviewNudgeMaximumMinutes = minutes }
+        persistReviewNudgeRange()
+    }
+
+    func setReviewNudgeMaximumMinutes(_ value: Double) {
+        let minutes = ReviewNudgeTiming.clampedMinutes(value, fallback: 180)
+        reviewNudgeMaximumMinutes = minutes
+        if reviewNudgeMinimumMinutes > minutes { reviewNudgeMinimumMinutes = minutes }
+        persistReviewNudgeRange()
+    }
+
+    private func persistReviewNudgeRange() {
+        defaults.set(reviewNudgeMinimumMinutes, forKey: reviewNudgeMinimumKey)
+        defaults.set(reviewNudgeMaximumMinutes, forKey: reviewNudgeMaximumKey)
+    }
+
+    private static func clampWidth(_ width: CGFloat) -> CGFloat {
+        min(max(width, notchPanelWidthRange.lowerBound), notchPanelWidthRange.upperBound)
     }
 
     func setMenuBarIconSymbol(_ symbol: MenuBarIconSymbol) {
@@ -435,7 +514,7 @@ final class SettingsStore: ObservableObject {
         guard !containsTab else { return "Tab is reserved for focus navigation" }
 
         if action.isGlobalHotkey && combo.globalHotkeyKeyCode == nil {
-            return "The global shortcut needs exactly one key (e.g. ⌥⌘R)"
+            return "The global shortcut needs exactly one key (e.g. ⌥Space)"
         }
         return nil
     }

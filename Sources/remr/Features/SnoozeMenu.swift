@@ -41,8 +41,8 @@ struct SnoozeMenu: View {
             }
         }
         .padding(8)
-        .frame(width: 190)
-        .liquidGlassPane(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .frame(width: 252)
+
         .liquidGlassGrouping()
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Snooze options")
@@ -54,11 +54,9 @@ struct SnoozeMenu: View {
         Button(action: action) {
             Label(title, systemImage: systemImage)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+
         }
-        .buttonStyle(.plain)
-        .padding(.horizontal, 7)
-        .padding(.vertical, 5)
+        .buttonStyle(DropdownRowStyle())
         .accessibilityLabel(title)
     }
 }

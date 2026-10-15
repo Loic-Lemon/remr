@@ -36,6 +36,8 @@ private struct TimelineOverflowButton: View {
 }
 
 /// Shared controls for rotating through the chart's global timeline lanes.
+/// A single compact line sized to match the footer toggles, with the lane
+/// navigation keyboard shortcuts shown on the buttons themselves.
 private struct GanttLaneControls: View {
     let start: Int
     let end: Int
@@ -46,49 +48,64 @@ private struct GanttLaneControls: View {
     let onMoveDown: () -> Void
 
     var body: some View {
-        HStack(spacing: 6) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Gantt bars")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.primary)
-                Text("\(start)–\(end) of \(total)")
-                    .font(.system(size: 10, weight: .medium, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-            }
+        HStack(spacing: 5) {
+            Text("Gantt")
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .foregroundStyle(.secondary)
+            Text("\(start)–\(end)/\(total)")
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(.primary)
             HStack(spacing: 2) {
                 laneButton(systemImage: "chevron.up",
-                           help: "Show the previous Gantt bar",
+                           shortcut: .upArrow,
+                           glyph: "⌥↑",
+                           help: "Previous Gantt bar (⌥↑)",
                            enabled: canMoveUp,
                            action: onMoveUp)
                 laneButton(systemImage: "chevron.down",
-                           help: "Show the next Gantt bar",
+                           shortcut: .downArrow,
+                           glyph: "⌥↓",
+                           help: "Next Gantt bar (⌥↓)",
                            enabled: canMoveDown,
                            action: onMoveDown)
             }
         }
-        .padding(.leading, 9)
-        .padding(.trailing, 4)
-        .padding(.vertical, 4)
+        .padding(.leading, 7)
+        .padding(.trailing, 3)
+        .frame(height: 18)
         .background(Color.primary.opacity(0.05), in: Capsule())
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Gantt bars \(start) through \(end) of \(total)")
     }
 
     private func laneButton(systemImage: String,
+                            shortcut: KeyEquivalent,
+                            glyph: String,
                             help: String,
                             enabled: Bool,
                             action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: 9, weight: .bold))
-                .frame(width: 24, height: 22)
-                .background(Color.primary.opacity(enabled ? 0.09 : 0.035), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            HStack(spacing: 3) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(Color.primary.opacity(0.65))
+                Text(glyph)
+                    .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Color.primary)
+            }
+            .padding(.horizontal, 5)
+            .frame(minWidth: 32, minHeight: 17)
+            .background(Color.primary.opacity(enabled ? 0.14 : 0.05), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(enabled ? 0.22 : 0.07), lineWidth: 0.75)
+            }
         }
         .buttonStyle(.plain)
-        .foregroundStyle(enabled ? Color.primary : Color.secondary)
-        .opacity(enabled ? 1 : 0.48)
+        .opacity(enabled ? 1 : 0.45)
         .disabled(!enabled)
+        .keyboardShortcut(shortcut, modifiers: .option)
         .help(help)
         .accessibilityLabel(help)
     }
@@ -106,6 +123,28 @@ struct CalendarActions {
 /// Grid coordinate space shared by the month/week grids for drag geometry.
 private let calendarGridSpace = "calendarGrid"
 
+/// Diagonal hatch marking "free" days — days with no reminders due, and with
+/// the Gantt overlay on, days no bar runs through — so empty cells read at a
+/// glance.
+private struct FreeDayStripes: View {
+    var spacing: CGFloat = 6
+    var lineWidth: CGFloat = 1
+    var color: Color
+
+    var body: some View {
+        Canvas { context, size in
+            var x = -size.height
+            while x < size.width + size.height {
+                var path = Path()
+                path.move(to: CGPoint(x: x, y: 0))
+                path.addLine(to: CGPoint(x: x + size.height, y: size.height))
+                context.stroke(path, with: .color(color), lineWidth: lineWidth)
+                x += spacing
+            }
+        }
+    }
+}
+
 /// Chip frame per reminder id, in the grid's coordinate space.
 private struct ChipFramePreference: PreferenceKey {
     static var defaultValue: [String: CGRect] = [:]
@@ -122,12 +161,22 @@ private struct CellFramePreference: PreferenceKey {
     }
 }
 
-/// Centered popup calendar: reminders bucketed onto their due dates across
+/// Number of Gantt lanes the active grid can show, reported upward so the
+/// lane controls can live in the calendar's footer instead of a grid row.
+private struct GanttCapacityPreference: PreferenceKey {
+    static var defaultValue: Int = 1
+    static func reduce(value: inout Int, nextValue: () -> Int) {
+        value = max(value, nextValue())
+    }
+}
+
+/// Calendar content, hosted in the top-edge glass panel: reminders bucketed across
 /// month, week, and day views. Chips are draggable to reschedule, right-click
 /// snoozes, and "Show completed" reveals completed reminders struck through.
 struct CalendarView: View {
     @EnvironmentObject private var store: ReminderStore
     @EnvironmentObject private var settings: SettingsStore
+    let reveal: NotchRevealController
     let onCancel: () -> Void
     /// Double-clicking a reminder hands it to the main popover's detail page.
     var onOpenDetail: (EKReminder) -> Void = { _ in }
@@ -141,6 +190,10 @@ struct CalendarView: View {
     @State private var showCompleted = false
     /// Overlay today-to-due bars on the month and week grids.
     @State private var showTimeline = false
+    /// Windowed Gantt lane shown in the grids, shared with the footer controls.
+    @State private var laneOffset = 0
+    /// How many Gantt lanes the active grid fits, reported by the grid.
+    @State private var laneCapacity = 1
     @State private var showHelp = false
     @State private var snoozingReminder: EKReminder?
     @State private var snoozeShowingPicker = false
@@ -158,6 +211,7 @@ struct CalendarView: View {
                               buckets: buckets,
                               timelineBars: timelineBars,
                               showTimeline: showTimeline,
+                              laneOffset: $laneOffset,
                               actions: actions,
                               onSelectDay: selectDay,
                               onDrop: dropReminder,
@@ -168,6 +222,7 @@ struct CalendarView: View {
                              buckets: buckets,
                              timelineBars: timelineBars,
                              showTimeline: showTimeline,
+                             laneOffset: $laneOffset,
                              actions: actions,
                              onSelectDay: selectDay,
                              onDrop: dropReminder,
@@ -184,10 +239,10 @@ struct CalendarView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
+            .onPreferenceChange(GanttCapacityPreference.self) { laneCapacity = max(1, $0) }
             Divider().opacity(0.45)
             footer
         }
-        .liquidGlassPopup()
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Calendar")
         .onExitCommand(perform: onCancel)
@@ -275,16 +330,7 @@ struct CalendarView: View {
             }
             .buttonStyle(.plain)
             .help("Next")
-            Button {
-                today()
-            } label: {
-                Text("Today")
-                    .font(.caption.weight(.medium))
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 4)
-                    .liquidGlassChip()
-            }
-            .buttonStyle(.plain)
+            CalendarTodayButton(reveal: reveal, action: today)
             Button {
                 showHelp = true
             } label: {
@@ -294,7 +340,7 @@ struct CalendarView: View {
             }
             .buttonStyle(.plain)
             .help("What you can do with the calendar")
-            .popover(isPresented: $showHelp, arrowEdge: .bottom) {
+            .remrPopover(isPresented: $showHelp, arrowEdge: .bottom) {
                 CalendarHelpView()
             }
             Spacer()
@@ -341,7 +387,11 @@ struct CalendarView: View {
                 .toggleStyle(.checkbox)
                 .controlSize(.small)
                 .font(.caption)
-                .help("Show Gantt bars from today to each due date across the month and week grids")
+                .keyboardShortcut("g", modifiers: [])
+                .help("Show Gantt bars from today to each due date across the month and week grids (G)")
+            if showTimeline && mode != .day && !timelineBars.isEmpty {
+                footerLaneControls
+            }
             Spacer()
             if let panelError {
                 Text(panelError)
@@ -351,7 +401,27 @@ struct CalendarView: View {
             }
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 8)
+        .frame(height: 32)
+    }
+
+    /// Lane navigation for the Gantt overlay, parked in the footer row so the
+    /// grid keeps its full height when the bars are enabled.
+    private var footerLaneControls: some View {
+        let total = timelineBars.count
+        let offset = min(max(0, laneOffset), max(0, total - laneCapacity))
+        return GanttLaneControls(start: offset + 1,
+                                 end: min(total, offset + laneCapacity),
+                                 total: total,
+                                 canMoveUp: offset > 0,
+                                 canMoveDown: offset + laneCapacity < total,
+                                 onMoveUp: { moveFooterLane(by: -1) },
+                                 onMoveDown: { moveFooterLane(by: 1) })
+    }
+
+    private func moveFooterLane(by delta: Int) {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            laneOffset = min(max(0, laneOffset + delta), max(0, timelineBars.count - laneCapacity))
+        }
     }
 
     // MARK: - Snooze
@@ -609,6 +679,7 @@ private struct MonthGrid: View {
     let buckets: [Date: [EKReminder]]
     let timelineBars: [TimelineBar]
     let showTimeline: Bool
+    @Binding var laneOffset: Int
     let actions: CalendarActions
     let onSelectDay: (Date) -> Void
     let onDrop: ([String], Date) -> Bool
@@ -617,7 +688,6 @@ private struct MonthGrid: View {
     @State private var cellFrames: [Date: CGRect] = [:]
     @State private var chipFrames: [String: CGRect] = [:]
     @State private var dragging: (id: String, location: CGPoint)?
-    @State private var laneOffset = 0
 
     private var weekdaySymbols: [String] {
         CalendarGridMath.weekdaySymbols(calendar: calendar)
@@ -635,14 +705,12 @@ private struct MonthGrid: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let headerHeight: CGFloat = showTimeline ? 58 : 30
-            let cellHeight = max(104, (proxy.size.height - headerHeight - CGFloat(max(0, rowCount - 1)) * 4 - CGFloat(rowCount) * 8) / CGFloat(rowCount))
+            // Row gap stays 4pt with and without the Gantt overlay so day
+            // cells keep the exact same size when bars are toggled.
+            let cellHeight = max(104, (proxy.size.height - 30 - CGFloat(max(0, rowCount - 1)) * 4 - CGFloat(rowCount) * 8) / CGFloat(rowCount))
             let laneCapacity = max(1, Int((cellHeight - 28) / 20))
             let visibleOffset = clampedLaneOffset(capacity: laneCapacity)
             VStack(spacing: 8) {
-                if showTimeline && !timelineBars.isEmpty {
-                    laneControls(capacity: laneCapacity, offset: visibleOffset)
-                }
                 HStack(spacing: 4) {
                     ForEach(weekdaySymbols, id: \.self) { symbol in
                         Text(symbol)
@@ -654,7 +722,7 @@ private struct MonthGrid: View {
                 ZStack(alignment: .topLeading) {
                     ScrollView(.vertical) {
                         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 7),
-                                  spacing: showTimeline ? 0 : 4) {
+                                  spacing: 4) {
                             ForEach(0..<(leadingBlanks + daysInMonth), id: \.self) { index in
                                 if index < leadingBlanks {
                                     Color.clear
@@ -672,6 +740,7 @@ private struct MonthGrid: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .coordinateSpace(name: calendarGridSpace)
+                .preference(key: GanttCapacityPreference.self, value: laneCapacity)
             }
         }
         .onPreferenceChange(ChipFramePreference.self) { chipFrames = $0 }
@@ -728,23 +797,6 @@ private struct MonthGrid: View {
         min(max(0, laneOffset), max(0, timelineBars.count - capacity))
     }
 
-    private func laneControls(capacity: Int, offset: Int) -> some View {
-        GanttLaneControls(start: offset + 1,
-                          end: min(timelineBars.count, offset + capacity),
-                          total: timelineBars.count,
-                          canMoveUp: offset > 0,
-                          canMoveDown: offset + capacity < timelineBars.count,
-                          onMoveUp: { moveLane(by: -1, capacity: capacity) },
-                          onMoveDown: { moveLane(by: 1, capacity: capacity) })
-            .frame(maxWidth: .infinity, alignment: .trailing)
-    }
-
-    private func moveLane(by delta: Int, capacity: Int) {
-        withAnimation(.easeInOut(duration: 0.18)) {
-            laneOffset = min(max(0, laneOffset + delta), max(0, timelineBars.count - capacity))
-        }
-    }
-
     private func moveLane(to offset: Int, capacity: Int) {
         withAnimation(.easeInOut(duration: 0.18)) {
             laneOffset = min(max(0, offset), max(0, timelineBars.count - capacity))
@@ -798,6 +850,10 @@ private struct MonthGrid: View {
         let items = buckets[date] ?? []
         let isToday = calendar.isDateInToday(date)
         let isDropTarget = dropHighlightDate == date
+        // A day is "free" with no reminders, or — under the Gantt overlay —
+        // no bar spanning it.
+        let coveredByBar = timelineBars.contains { $0.startDay <= date && date <= $0.endDay }
+        let isFree = !isToday && (showTimeline ? !coveredByBar : items.isEmpty)
         return VStack(alignment: .leading, spacing: 2) {
             Text("\(day)")
                 .font(.caption2)
@@ -810,7 +866,13 @@ private struct MonthGrid: View {
         .padding(4)
         .background {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.primary.opacity(isToday ? 0.055 : 0.025))
+                .fill(Color.primary.opacity(isToday ? 0.055 : (isFree ? 0.045 : 0.025)))
+                .overlay {
+                    if isFree {
+                        FreeDayStripes(color: Color.primary.opacity(0.06))
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+                }
                 .overlay {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.75)
@@ -842,6 +904,7 @@ private struct WeekGrid: View {
     let buckets: [Date: [EKReminder]]
     let timelineBars: [TimelineBar]
     let showTimeline: Bool
+    @Binding var laneOffset: Int
     let actions: CalendarActions
     let onSelectDay: (Date) -> Void
     let onDrop: ([String], Date) -> Bool
@@ -850,18 +913,13 @@ private struct WeekGrid: View {
     @State private var cellFrames: [Date: CGRect] = [:]
     @State private var chipFrames: [String: CGRect] = [:]
     @State private var dragging: (id: String, location: CGPoint)?
-    @State private var laneOffset = 0
 
     var body: some View {
         GeometryReader { proxy in
-            let headerHeight: CGFloat = showTimeline ? 58 : 30
-            let columnHeight = max(300, proxy.size.height - headerHeight)
+            let columnHeight = max(300, proxy.size.height - 30)
             let laneCapacity = max(1, Int((columnHeight - 28) / 20))
             let visibleOffset = clampedLaneOffset(capacity: laneCapacity)
             VStack(spacing: 8) {
-                if showTimeline && !timelineBars.isEmpty {
-                    laneControls(capacity: laneCapacity, offset: visibleOffset)
-                }
                 HStack(spacing: 4) {
                     ForEach(CalendarGridMath.weekdaySymbols(calendar: calendar), id: \.self) { symbol in
                         Text(symbol)
@@ -872,7 +930,7 @@ private struct WeekGrid: View {
                 }
                 ZStack(alignment: .topLeading) {
                     ScrollView(.vertical) {
-                        HStack(spacing: showTimeline ? 0 : 4) {
+                        HStack(spacing: 4) {
                             ForEach(0..<7, id: \.self) { i in
                                 dayColumn(i, height: columnHeight, laneOffset: visibleOffset)
                             }
@@ -883,6 +941,7 @@ private struct WeekGrid: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .coordinateSpace(name: calendarGridSpace)
+                .preference(key: GanttCapacityPreference.self, value: laneCapacity)
             }
         }
         .onPreferenceChange(ChipFramePreference.self) { chipFrames = $0 }
@@ -939,23 +998,6 @@ private struct WeekGrid: View {
         min(max(0, laneOffset), max(0, timelineBars.count - capacity))
     }
 
-    private func laneControls(capacity: Int, offset: Int) -> some View {
-        GanttLaneControls(start: offset + 1,
-                          end: min(timelineBars.count, offset + capacity),
-                          total: timelineBars.count,
-                          canMoveUp: offset > 0,
-                          canMoveDown: offset + capacity < timelineBars.count,
-                          onMoveUp: { moveLane(by: -1, capacity: capacity) },
-                          onMoveDown: { moveLane(by: 1, capacity: capacity) })
-            .frame(maxWidth: .infinity, alignment: .trailing)
-    }
-
-    private func moveLane(by delta: Int, capacity: Int) {
-        withAnimation(.easeInOut(duration: 0.18)) {
-            laneOffset = min(max(0, laneOffset + delta), max(0, timelineBars.count - capacity))
-        }
-    }
-
     private func moveLane(to offset: Int, capacity: Int) {
         withAnimation(.easeInOut(duration: 0.18)) {
             laneOffset = min(max(0, offset), max(0, timelineBars.count - capacity))
@@ -1007,6 +1049,10 @@ private struct WeekGrid: View {
         let items = buckets[date] ?? []
         let isToday = calendar.isDateInToday(date)
         let isDropTarget = dropHighlightDate == date
+        // A day is "free" with no reminders, or — under the Gantt overlay —
+        // no bar spanning it.
+        let coveredByBar = timelineBars.contains { $0.startDay <= date && date <= $0.endDay }
+        let isFree = !isToday && (showTimeline ? !coveredByBar : items.isEmpty)
         let symbol = calendar.veryShortWeekdaySymbols[calendar.component(.weekday, from: date) - 1]
         return VStack(alignment: .leading, spacing: 2) {
             Text("\(symbol) \(calendar.component(.day, from: date))")
@@ -1019,7 +1065,13 @@ private struct WeekGrid: View {
         .padding(4)
         .background {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.primary.opacity(isToday ? 0.055 : 0.025))
+                .fill(Color.primary.opacity(isToday ? 0.055 : (isFree ? 0.045 : 0.025)))
+                .overlay {
+                    if isFree {
+                        FreeDayStripes(color: Color.primary.opacity(0.06))
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+                }
                 .overlay {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.75)
@@ -1228,6 +1280,31 @@ func snoozeMenuItems(for reminder: EKReminder, actions: CalendarActions) -> some
 }
 
 
+/// Only this small control observes reveal flags; opening the panel must not
+/// rebuild the calendar's buckets, timeline lanes and day grids.
+private struct CalendarTodayButton: View {
+    @ObservedObject var reveal: NotchRevealController
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            if reveal.contentRevealed {
+                label.liquidGlassChip()
+            } else {
+                label
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var label: some View {
+        Text("Today")
+            .font(.caption.weight(.medium))
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+    }
+}
+
 /// The (i) popover listing what the calendar can do.
 private struct CalendarHelpView: View {
     var body: some View {
@@ -1240,6 +1317,8 @@ private struct CalendarHelpView: View {
             helpRow("Red dot = overdue · coloured dot = the reminder's tag")
             helpRow("“Show completed” adds finished reminders, struck through")
             helpRow("Show Gantt bars stretch from today to each due date (red = overdue)")
+            helpRow("Lane navigation sits in the footer: ⌥↑ previous bar, ⌥↓ next bar")
+            helpRow("Striped cells are days with no reminders and no Gantt bar running through them")
             helpRow("Esc closes · ⌥⌘C opens from anywhere")
         }
         .padding(12)

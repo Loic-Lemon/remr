@@ -70,6 +70,7 @@ protocol VoiceTranscriber: AnyObject {
     var activeDeviceName: String? { get }
     var fellBackToDefaultInput: Bool { get }
     var onTranscriptChange: ((String) -> Void)? { get set }
+    var onRecognitionFailure: ((String) -> Void)? { get set }
 
     func start() async throws
     func stop() async throws -> String
@@ -103,6 +104,7 @@ final class AppleSpeechTranscriber: NSObject, VoiceTranscriber, SFSpeechRecogniz
     private(set) var activeDeviceName: String?
     private(set) var fellBackToDefaultInput = false
     var onTranscriptChange: ((String) -> Void)?
+    var onRecognitionFailure: ((String) -> Void)?
 
     private let recognizer: SFSpeechRecognizer
     var inputDeviceID: String?
@@ -166,6 +168,12 @@ final class AppleSpeechTranscriber: NSObject, VoiceTranscriber, SFSpeechRecogniz
             }
         }
         let format = input.outputFormat(forBus: 0)
+        // A dead/missing default input yields an invalid format; installTap
+        // on it raises NSInternalInconsistencyException (crash).
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            cancel()
+            throw Error.inputDeviceUnavailable
+        }
         input.installTap(onBus: 0, bufferSize: 1_024, format: format) { [weak self] buffer, _ in
             self?.request?.append(buffer)
         }
@@ -188,7 +196,16 @@ final class AppleSpeechTranscriber: NSObject, VoiceTranscriber, SFSpeechRecogniz
                     }
                     self.receivedFinalResult = result.isFinal
                 }
-                if error != nil { self.stopAudioCapture() }
+                if let error {
+                    // Errors after stop()/cancel() are expected teardown
+                    // noise; only a failure while the engine is still
+                    // capturing is a real session death.
+                    let wasCapturing = self.audioEngine != nil
+                    self.stopAudioCapture()
+                    if wasCapturing, !self.receivedFinalResult {
+                        self.onRecognitionFailure?(error.localizedDescription)
+                    }
+                }
             }
         }
 
@@ -300,6 +317,7 @@ final class VoiceDictationCoordinator: ObservableObject {
 
     private let transcriber: VoiceTranscriber
     private var processingTask: Task<Void, Never>?
+    private var startTask: Task<Void, Never>?
     var onCompleted: ((VoiceDictationMode, String, String) -> Void)?
 
     init(transcriber: VoiceTranscriber? = nil) {
@@ -307,6 +325,11 @@ final class VoiceDictationCoordinator: ObservableObject {
         self.transcriber = selected
         selected.onTranscriptChange = { [weak self] transcript in
             self?.transcript = transcript
+        }
+        selected.onRecognitionFailure = { [weak self] message in
+            guard let self, self.state == .recording else { return }
+            self.transcriber.cancel()
+            self.state = .failed("Speech recognition stopped unexpectedly. \(message)")
         }
     }
 
@@ -322,14 +345,22 @@ final class VoiceDictationCoordinator: ObservableObject {
         activeMicrophoneName = nil
         usedFallbackMicrophone = false
         state = .recording
-        Task { @MainActor in
+        startTask = Task { @MainActor in
             do {
                 try await transcriber.start()
-                activeMicrophoneName = transcriber.activeDeviceName ?? "System default"
-                usedFallbackMicrophone = transcriber.fellBackToDefaultInput
             } catch {
-                state = .failed(error.localizedDescription)
+                // Never resurrect a session the user already cancelled.
+                if state == .recording || state == .processing {
+                    state = .failed(error.localizedDescription)
+                }
+                return
             }
+            activeMicrophoneName = transcriber.activeDeviceName ?? "System default"
+            usedFallbackMicrophone = transcriber.fellBackToDefaultInput
+            // Cancelled while the permission prompt was still up: the
+            // transcriber finished setting up afterwards — tear the orphan
+            // engine down.
+            if state == .idle { transcriber.cancel() }
         }
     }
 
@@ -337,7 +368,14 @@ final class VoiceDictationCoordinator: ObservableObject {
         guard state == .recording else { return }
         state = .processing
         processingTask?.cancel()
+        let pendingStart = startTask
         processingTask = Task { @MainActor in
+            // start() may still be on the permission prompt. Letting it
+            // settle first stops stop() from running against a half-started
+            // transcriber (which produced a bogus "No speech" failure while
+            // the engine kept recording invisibly in the background).
+            await pendingStart?.value
+            guard state == .processing else { return } // start failed or user cancelled
             do {
                 let transcript = try await transcriber.stop()
                 self.transcript = transcript
@@ -347,10 +385,17 @@ final class VoiceDictationCoordinator: ObservableObject {
                 }
                 state = .idle
                 onCompleted?(mode, transcript, cleaned)
-            } catch is CancellationError {
-                state = .idle
             } catch {
-                state = .failed(error.localizedDescription)
+                // Cancel surfaces as CancellationError or URLError(.cancelled);
+                // return to idle instead of resurrecting a failure the user
+                // must retry. Without this, the racing task's catch overwrote
+                // the .idle that cancel() had just set.
+                if Task.isCancelled || error is CancellationError
+                    || (error as? URLError)?.code == .cancelled {
+                    state = .idle
+                } else {
+                    state = .failed(error.localizedDescription)
+                }
             }
         }
     }
@@ -361,6 +406,18 @@ final class VoiceDictationCoordinator: ObservableObject {
         transcriber.cancel()
         transcript = ""
         state = .idle
+        // start() can resume from the permission prompt *after* this cancel
+        // and set up a fresh engine; tear it down again unless a session
+        // began since.
+        let pendingStart = startTask
+        startTask = nil
+        Task { @MainActor in
+            await pendingStart?.value
+            if state == .idle {
+                transcriber.cancel()
+                transcript = ""
+            }
+        }
     }
 
     func retry() {

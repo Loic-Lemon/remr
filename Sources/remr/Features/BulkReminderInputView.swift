@@ -33,7 +33,7 @@ struct BulkReminderInputView: View {
                 .padding(12)
                 .overlay(alignment: .topLeading) {
                     if text.isEmpty {
-                        Text("Paste Markdown with headings and reminder items…")
+                        Text("Paste numbered Markdown reminders; nested bullets become descriptions…")
                             .foregroundStyle(.secondary)
                             .padding(.top, 20)
                             .padding(.leading, 17)

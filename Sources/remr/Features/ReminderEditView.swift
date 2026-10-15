@@ -386,16 +386,12 @@ struct ReminderEditView: View {
                 Text("List")
                     .font(.callout)
                 Spacer()
-                Picker("", selection: calendarBinding) {
-                    Text("Default list").tag("")
-                    ForEach(calendarChoices, id: \.calendarIdentifier) { calendar in
-                        Text(calendar.title).tag(calendar.calendarIdentifier)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .controlSize(.small)
-                .fixedSize()
+                RemrDropdown(title: "List", selection: calendarBinding,
+                             options: [DropdownOption(value: "", title: "Default list", systemImage: "list.bullet")]
+                                + calendarChoices.map {
+                                    DropdownOption(value: $0.calendarIdentifier, title: $0.title,
+                                                   systemImage: "list.bullet", color: Color(cgColor: $0.cgColor))
+                                }, showsTitle: false)
             }
             .padding(.vertical, 8)
 

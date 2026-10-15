@@ -4,7 +4,12 @@ import SwiftUI
 
 enum MainPopoverLayout {
     static let baseHeight: CGFloat = 600
-    static let pomodoroHeaderHeight: CGFloat = 36
+    static let pomodoroBottomPadding: CGFloat = 8
+    static let pomodoroHeaderHeight: CGFloat = 36 + pomodoroBottomPadding
+
+    static func height(pomodoroEnabled: Bool) -> CGFloat {
+        baseHeight + (pomodoroEnabled ? pomodoroHeaderHeight : 0)
+    }
 }
 
 extension Notification.Name {
@@ -18,11 +23,16 @@ extension Notification.Name {
 /// The single-page popover: add a reminder on top, search below it,
 /// and the unified reminder list beneath that.
 struct MainView: View {
+    /// Which chrome this instance is hosted in. Both the popover and the
+    /// notch panel keep a warm MainView alive; the key monitor must only
+    /// route events on the surface that is actually in use, or the warm
+    /// invisible twin silently eats keystrokes meant for the visible panel.
+    var surface: MainSurfaceStyle = .popover
+
     @EnvironmentObject var store: ReminderStore
     @EnvironmentObject var settings: SettingsStore
     @EnvironmentObject var voiceLogStore: VoiceLogStore
     @ObservedObject private var filterStore = FilterStore.shared
-    @ObservedObject private var pomodoro = PomodoroTimerStore.shared
     @State private var searchText = ""
     @State private var smartSearchEnabled = false
     @State private var smartSearchIDs: [String]?
@@ -34,23 +44,13 @@ struct MainView: View {
     @State private var showRecovery = false
     @State private var showSettings = false
     @State private var hoveredToolbarTool: String?
-    @State private var showPomodoro = false
     @State private var pomodoroPresented = false
-    @State private var pomodoroTransitionGeneration = 0
+    @State private var pomodoroPanelHeight: CGFloat = 183
+    @State private var syncFooterHeight: CGFloat = 20
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let popoverBaseHeight = MainPopoverLayout.baseHeight
-    private let pomodoroHeaderHeight = MainPopoverLayout.pomodoroHeaderHeight
-    private let pomodoroPanelHeight: CGFloat = 470
-    // Give the timer room by compressing the reminder area while it is open;
-    // keeping the whole popover below the screen edge prevents AppKit from
-    // jumping it to a different position.
-    private let pomodoroOpenBaseHeight: CGFloat = 420
-
     private var collapsedPopoverHeight: CGFloat {
-        popoverBaseHeight + (settings.pomodoroEnabled ? pomodoroHeaderHeight : 0)
-    }
-
-    private var expandedPopoverHeight: CGFloat {
-        pomodoroOpenBaseHeight + pomodoroHeaderHeight + pomodoroPanelHeight
+        MainPopoverLayout.height(pomodoroEnabled: settings.pomodoroEnabled)
     }
     @State private var bulkInput: String?
     @State private var showBulkInput = false
@@ -210,11 +210,12 @@ struct MainView: View {
     /// in calendar order — the list picker's data, independent of visibility
     /// so a hidden list still shows what it holds.
     private var listCounts: [(EKCalendar, Int)] {
-        let pool = filtered(unfilteredAllItems)
-        return store.reminderCalendars().map { calendar in
-            let count = pool.filter { $0.calendar?.calendarIdentifier == calendar.calendarIdentifier }.count
-            return (calendar, count)
+        var counts: [String: Int] = [:]
+        for reminder in filtered(unfilteredAllItems) {
+            guard let identifier = reminder.calendar?.calendarIdentifier else { continue }
+            counts[identifier, default: 0] += 1
         }
+        return store.reminderCalendars().map { ($0, counts[$0.calendarIdentifier, default: 0]) }
     }
 
     /// True when incomplete reminders exist but every one belongs to a hidden
@@ -386,11 +387,9 @@ struct MainView: View {
                             hidesTabs: isFiltering)
     }
 
-    var body: some View {
+    private var mainContent: some View {
         Group {
-            if showSettings {
-                SettingsView(onClose: { showSettings = false })
-            } else if let viewingReminder {
+            if let viewingReminder {
                 detailPage(for: viewingReminder)
             } else if let editingReminder {
                 ReminderEditView(reminder: editingReminder,
@@ -448,6 +447,7 @@ struct MainView: View {
                                                     self.undoEntry = nil
                                                     self.bulkInput = $0
                                                 })
+                                .padding(.horizontal, 12)
                                 searchRow
                             }
                             .background(
@@ -469,39 +469,100 @@ struct MainView: View {
                             reservedTopHeight = height
                         }
                     }
-                    .frame(height: pomodoroPresented ? pomodoroOpenBaseHeight : popoverBaseHeight)
-                    .blur(radius: pomodoroPresented ? 8 : 0)
-                    .animation(.easeInOut(duration: 0.24), value: pomodoroPresented)
+                    // Keep the scroll view at its normal layout size; only
+                    // its visible area contracts to make room for the timer.
+                    .frame(height: popoverBaseHeight - syncFooterHeight)
+                    .compositingGroup()
+                    .blur(radius: pomodoroPresented ? 5 : 0)
+                    // Apply the blur once rather than filtering the reminder
+                    // tree at a different radius on every animation frame.
+                    .animation(nil, value: pomodoroPresented)
+                    .allowsHitTesting(!pomodoroPresented)
+                    .accessibilityHidden(pomodoroPresented)
+                    .frame(height: popoverBaseHeight - syncFooterHeight - (pomodoroPresented ? pomodoroPanelHeight : 0),
+                           alignment: .top)
+                    .clipped()
+                    // The sync status owns a real row above the timer. It must
+                    // not live in the clipped reminder tree, where native glass
+                    // effects can escape the clip and cover the timer controls.
+                    syncFooter
+                        .background(HeightReader { syncFooterHeight = $0 })
                     pomodoroSection
+                    PomodoroPanelSection(isPresented: settings.pomodoroEnabled && pomodoroPresented,
+                                         timer: .shared,
+                                         onHeightChange: { pomodoroPanelHeight = $0 })
                 }
+                // The timer has its own section inside the existing window.
+                .frame(height: collapsedPopoverHeight)
+            }
+        }
+    }
+
+    var body: some View {
+        Group {
+            // Native glass can escape a SwiftUI opacity layer. Unmount the
+            // reminder controls while Settings owns the pane.
+            if showSettings {
+                SettingsView(onClose: {
+                    showSettings = false
+                    titleFocusRequest += 1
+                })
+            } else {
+                mainContent
+            }
+        }
+        .onChange(of: showSettings) { presented in
+            if presented {
+                hoveredToolbarTool = nil
+                searchFocused = false
+                popoverWindow?.makeFirstResponder(nil)
+                heldKeys.removeAll()
+                firedKeys = nil
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .remrPopoverClosing)) { _ in
             collapsePomodoro(animated: false)
+            heldKeys.removeAll()
+            firedKeys = nil
         }
-        .onChange(of: settings.pomodoroEnabled) { enabled in
-            if enabled {
-                pomodoroTransitionGeneration &+= 1
-                showPomodoro = false
-                pomodoroPresented = false
-                DispatchQueue.main.async {
-                    AppDelegate.instance?.setPopoverHeight(self.collapsedPopoverHeight)
-                }
-            } else {
-                collapsePomodoro(animated: false)
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { note in
+            guard let window = note.object as? NSWindow, window === popoverWindow else { return }
+            heldKeys.removeAll()
+            firedKeys = nil
+        }
+        .onChange(of: settings.pomodoroEnabled) { _ in
+            collapsePomodoro(animated: false)
+            DispatchQueue.main.async {
+                AppDelegate.instance?.setPopoverHeight(self.collapsedPopoverHeight)
             }
         }
         .onAppear {
             previousNavRows = navRows
             if popoverWindow == nil { popoverWindow = NSApp.keyWindow }
+            // REMR-POMO-PROBE-BEGIN
+            PomodoroKeyProbe.log("onAppear monitor installed surface=\(surface) popoverWindow=\(popoverWindow.map { "#\($0.windowNumber) \(type(of: $0))" } ?? "nil") keyWindow=\(NSApp.keyWindow.map { "#\($0.windowNumber)" } ?? "nil")")
+            // REMR-POMO-PROBE-END
             monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { event in
-                if settings.isCapturing { return event }
-                if showSettings || viewingReminder != nil || editingReminder != nil || bulkInput != nil || snoozingReminder != nil {
+                let watched = PomodoroKeyProbe.loggingEnabled && (event.keyCode == 35 || event.keyCode == 36 || event.keyCode == 76)
+                if settings.isCapturing { if watched { PomodoroKeyProbe.log("monitor k=\(event.keyCode) bail capturing") }; return event }
+                if showSettings || viewingReminder != nil || editingReminder != nil || bulkInput != nil || snoozingReminder != nil || showVoiceLog || showBulkInput {
+                    if watched { PomodoroKeyProbe.log("monitor k=\(event.keyCode) bail overlay") }
                     return event
                 }
-                guard let eventWindow = event.window else { return event }
+                // Both surfaces keep a warm MainView (and monitor) alive. Only
+                // the surface the user is actually looking at may consume the
+                // event; the twin passes it along so the right monitor sees it.
+                let activeSurfaceIsNotch = settings.notchPopover
+                guard (surface == .floatingPanel) == activeSurfaceIsNotch else {
+                    if watched { PomodoroKeyProbe.log("monitor k=\(event.keyCode) bail other-surface mine=\(surface) active=\(activeSurfaceIsNotch ? "notch" : "popover")") }
+                    return event
+                }
+                guard let eventWindow = event.window else { if watched { PomodoroKeyProbe.log("monitor k=\(event.keyCode) bail no-event-window") }; return event }
                 if popoverWindow == nil { popoverWindow = eventWindow }
-                guard eventWindow === popoverWindow else { return event }
+                guard eventWindow === popoverWindow else {
+                    if watched { PomodoroKeyProbe.log("monitor k=\(event.keyCode) bail window-mismatch event=#\(eventWindow.windowNumber) probe=#\(popoverWindow?.windowNumber ?? 0)") }
+                    return event
+                }
                 if event.type == .flagsChanged {
                     let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
                     if flags.contains(.command) { heldKeys.insert(ModifierKey.command.keyCode) } else { heldKeys.remove(ModifierKey.command.keyCode) }
@@ -518,7 +579,7 @@ struct MainView: View {
                         .first { $0.calendarItemIdentifier == id }
                 }()
                 let ctx = KeyboardContext(
-                    textFieldFocused: firstResponder is EnterSubmitTextView,
+                    textFieldFocused: firstResponder is NSTextView && !searchFocused,
                     searchFieldFocused: searchFocused || firstResponder is NSTextField,
                     selectionIsHeader: {
                         if case .tabHeader = selection { return true }
@@ -528,32 +589,42 @@ struct MainView: View {
                     searchHasText: !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                     selectionIsReminder: selectedReminder != nil,
                     selectionIsCompleted: selectedReminder?.isCompleted ?? false,
-                    hasUndo: undoEntry != nil
+                    hasUndo: undoEntry != nil,
+                    pomodoroEnabled: settings.pomodoroEnabled,
+                    pomodoroPresented: pomodoroPresented,
+                    emptyTitleFieldFocused: (firstResponder as? EnterSubmitTextView).map {
+                        $0.movesDownOnReturn && $0.string.isEmpty
+                    } ?? false
                 )
                 if event.type == .keyUp {
                     let canonical = ModifierKey.canonicalKeyCode(for: event.keyCode) ?? event.keyCode
                     heldKeys.remove(canonical)
                     syncModifiers(from: event.modifierFlags)
                     if heldKeys != firedKeys { firedKeys = nil }
+                    if watched { PomodoroKeyProbe.log("monitor k=\(event.keyCode) keyUp") }
                     return event
                 }
                 let canonical = ModifierKey.canonicalKeyCode(for: event.keyCode) ?? event.keyCode
                 heldKeys.insert(canonical)
                 syncModifiers(from: event.modifierFlags)
-                if event.isARepeat && heldKeys == firedKeys { return nil }
+                if event.isARepeat && heldKeys == firedKeys { if watched { PomodoroKeyProbe.log("monitor k=\(event.keyCode) bail repeat-swallow") }; return nil }
                 if event.keyCode == 48, heldKeys.contains(ModifierKey.shift.keyCode),
                    firstResponder is EnterSubmitTextView {
                     firedKeys = heldKeys
                     return event
                 }
-                switch KeyboardRouter.action(keyCode: event.keyCode,
-                                             heldKeyCodes: heldKeys,
-                                             context: ctx,
-                                             bindings: settings.bindings) {
+                let action = KeyboardRouter.action(keyCode: event.keyCode,
+                                                   heldKeyCodes: heldKeys,
+                                                   context: ctx,
+                                                   bindings: settings.bindings)
+                if watched { PomodoroKeyProbe.log("monitor k=\(event.keyCode) routed action=\(action) presented=\(pomodoroPresented) held=\(heldKeys.sorted())") }
+                switch action {
                 case .none: return event
                 case let action:
+                    if event.isARepeat && (action == .openCalendar || action == .showMainReminders || action == .togglePomodoro) { return nil }
                     firedKeys = heldKeys
                     execute(action)
+                    if watched { PomodoroKeyProbe.log("monitor k=\(event.keyCode) executed \(action) presented=\(pomodoroPresented)") }
                     return nil
                 }
             }
@@ -577,6 +648,7 @@ struct MainView: View {
             previousNavRows = rows
         }
         .onDisappear {
+            PomodoroKeyProbe.log("onDisappear monitor removed hadMonitor=\(monitor != nil)")
             if let monitor { NSEvent.removeMonitor(monitor) }
             monitor = nil
             selection = nil
@@ -602,6 +674,9 @@ struct MainView: View {
             // bulk import uses, inside this popover — never a second window.
             guard let text = note.userInfo?["text"] as? String else { return }
             showSettings = false
+            // The log branch precedes the bulk branch in `body`; without this
+            // reset, verify results posted while the log is open are dropped.
+            showVoiceLog = false
             editingReminder = nil
             viewingReminder = nil
             showBulkInput = false
@@ -636,6 +711,11 @@ struct MainView: View {
             Image(systemName: systemImage)
                 .font(.system(size: 14))
                 .foregroundStyle(.secondary)
+                .frame(width: 28, height: 28)
+                .background {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.primary.opacity(hoveredToolbarTool == title ? 0.07 : 0))
+                }
         }
         .buttonStyle(.plain)
         .disabled(disabled)
@@ -666,10 +746,11 @@ struct MainView: View {
     private var searchRow: some View {
         VStack(spacing: 8) {
             HStack(spacing: 8) {
-                HStack(spacing: 6) {
+                HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
+                        .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(.secondary)
-                    TextField("Search", text: $searchText)
+                    TextField("Search reminders", text: $searchText)
                         .textFieldStyle(.plain)
                         .focused($searchFocused)
                         .onChange(of: searchText) { _ in
@@ -731,28 +812,25 @@ struct MainView: View {
                     .help(smartSearchError ?? (settings.ollamaEnabled ? "Use Smart Search" :
                             "Enable local model features in Settings"))
                 }
-                .padding(.horizontal, 11)
-                .frame(minHeight: 30)
-                .liquidGlassField(in: Capsule())
+                .font(.system(size: 13))
+                .padding(.horizontal, 13)
+                .frame(minHeight: 36)
+                .liquidGlassInputField(focused: searchFocused)
 
                 TagFilterMenu(allTags: allTags,
                               tagCounts: tagCounts,
                               isPresented: $showTagFilter,
                               onManage: { showTagManager = true })
-                .popover(isPresented: $showTagManager, arrowEdge: .bottom) {
-                    TagManagerView()
+                .remrPopover(isPresented: $showTagManager, arrowEdge: .bottom) {
+                    TagManagerView(onClose: { showTagManager = false })
                         .environmentObject(store)
                 }
 
-                Button {
+                toolbarIconButton(systemImage: "rectangle.3.group", title: "Select lists") {
                     showListPicker.toggle()
-                } label: {
-                    Image(systemName: "rectangle.3.group")
-                        .font(.system(size: 14))
-                        .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.plain)
-                .help("Show or hide reminder lists")
+                .accessibilityLabel("Select lists")
+                .help("Select lists")
                 .background {
                     FastPopoverPresenter(
                         isPresented: showListPicker,
@@ -786,7 +864,7 @@ struct MainView: View {
                     }
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
-                    .liquidGlassCapsule(tint: filterColor, dimmed: pomodoroPresented)
+                    .liquidGlassCapsule(tint: filterColor)
                     .help("Filtered by #\(activeFilter)")
                 }
             }
@@ -905,7 +983,6 @@ struct MainView: View {
             .foregroundStyle(.tertiary)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 4)
-            .liquidGlassBand()
         }
     }
 
@@ -950,30 +1027,16 @@ struct MainView: View {
             }
             .frame(maxWidth: .infinity)
             .frame(height: 36)
+            .padding(.bottom, MainPopoverLayout.pomodoroBottomPadding)
             .buttonStyle(.plain)
-            .help(pomodoroPresented ? "Hide Pomodoro timer" : "Show Pomodoro timer")
-
-            if showPomodoro {
-                PomodoroTimerView(timer: pomodoro)
-                    .frame(maxWidth: .infinity)
-                    .opacity(pomodoroPresented ? 1 : 0)
-                    .offset(y: pomodoroPresented ? 0 : 14)
-                    // Animate the panel's layout height as well as its
-                    // content. Inserting a full-height view before the
-                    // popover resizes causes a one-frame jump.
-                    .frame(height: pomodoroPresented ? pomodoroPanelHeight : 0,
-                           alignment: .top)
-                    .clipped()
-            }
+            .help(pomodoroPresented ? "Hide Pomodoro timer" : "Show Pomodoro timer (P)")
         }
     }
 
     private var listArea: some View {
-        // The bottom band (week calendar + sync footer) is a sibling below the
-        // scroll view rather than a safeAreaInset: safeAreaInset does not
-        // inset NSScrollView content on macOS, so rows scroll behind the
-        // band's glass. Sibling layout ends the list exactly at the band's
-        // top edge.
+        // The optional week calendar is a sibling below the scroll view.
+        // The sync status is outside this clipped reminder area, above the
+        // Pomodoro section, so its surface cannot overlap timer controls.
         VStack(spacing: 0) {
             ZStack(alignment: .bottom) {
                 ScrollView {
@@ -994,7 +1057,6 @@ struct MainView: View {
                                 ForEach(filteredItems, id: \.calendarItemIdentifier) { reminder in
                                     ReminderRowView(reminder: reminder,
                                                     isSelected: selection == .reminder(reminder.calendarItemIdentifier),
-                                                    isDimmed: pomodoroPresented,
                                                     onSelect: { selectRow(.reminder(reminder.calendarItemIdentifier)) },
                                                     onOpen: { viewingReminder = reminder },
                                                     onToggleCompletion: performToggleCompletion,
@@ -1020,7 +1082,6 @@ struct MainView: View {
                                     ForEach(searchCompletedItems, id: \.calendarItemIdentifier) { reminder in
                                         ReminderRowView(reminder: reminder,
                                                         isSelected: selection == .reminder(reminder.calendarItemIdentifier),
-                                                        isDimmed: pomodoroPresented,
                                                         onSelect: { selectRow(.reminder(reminder.calendarItemIdentifier)) },
                                                         onOpen: { viewingReminder = reminder },
                                                         onToggleCompletion: performToggleCompletion,
@@ -1048,7 +1109,6 @@ struct MainView: View {
                                     ForEach(items, id: \.calendarItemIdentifier) { reminder in
                                         ReminderRowView(reminder: reminder,
                                                         isSelected: selection == .reminder(reminder.calendarItemIdentifier),
-                                                        isDimmed: pomodoroPresented,
                                                         onSelect: { selectRow(.reminder(reminder.calendarItemIdentifier)) },
                                                         onOpen: { viewingReminder = reminder },
                                                         onToggleCompletion: performToggleCompletion,
@@ -1109,12 +1169,10 @@ struct MainView: View {
                     .zIndex(1)
                 Divider().opacity(0.45)
             }
-            syncFooter
-                .zIndex(1)
         }
         .frame(maxWidth: .infinity)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .popover(isPresented: Binding(get: { snoozingReminder != nil },
+        .remrPopover(isPresented: Binding(get: { snoozingReminder != nil },
                                       set: { presented in
                                           if !presented { closeSnooze() }
                                       }), arrowEdge: .bottom) {
@@ -1429,6 +1487,19 @@ struct MainView: View {
             searchText.isEmpty ? closePopover() : (searchText = "")
         case .closePopover:
             closePopover()
+        case .openCalendar:
+            heldKeys.removeAll()
+            firedKeys = nil
+            AppDelegate.instance?.showCalendar()
+        case .showMainReminders:
+            heldKeys.removeAll()
+            firedKeys = nil
+            AppDelegate.instance?.showMainReminders()
+        case .togglePomodoro:
+            togglePomodoro()
+        case .togglePomodoroRunning:
+            let timer = PomodoroTimerStore.shared
+            timer.isRunning ? timer.pause() : timer.start()
         case .activateRow:
             switch selection {
             case .reminder(let id):
@@ -1491,52 +1562,27 @@ struct MainView: View {
     }
 
     private func togglePomodoro() {
-        if showPomodoro && pomodoroPresented {
+        if pomodoroPresented {
             collapsePomodoro()
         } else {
-            expandPomodoro()
+            openPomodoro()
         }
     }
 
-    private func expandPomodoro() {
-        pomodoroTransitionGeneration &+= 1
-        let generation = pomodoroTransitionGeneration
-        showPomodoro = true
-        pomodoroPresented = false
-        DispatchQueue.main.async {
-            guard generation == self.pomodoroTransitionGeneration,
-                  self.showPomodoro else { return }
-            AppDelegate.instance?.setPopoverHeight(self.expandedPopoverHeight, animated: true)
-            withAnimation(.easeOut(duration: 0.24)) {
-                self.pomodoroPresented = true
-            }
+    private func openPomodoro() {
+        PomodoroKeyProbe.log("openPomodoro")
+        searchFocused = false
+        selection = nil
+        popoverWindow?.makeFirstResponder(nil)
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
+            pomodoroPresented = true
         }
     }
 
     private func collapsePomodoro(animated: Bool = true) {
-        pomodoroTransitionGeneration &+= 1
-        let generation = pomodoroTransitionGeneration
-        guard animated else {
+        PomodoroKeyProbe.log("collapsePomodoro animated=\(animated)")
+        withAnimation(animated && !reduceMotion ? .easeOut(duration: 0.18) : nil) {
             pomodoroPresented = false
-            showPomodoro = false
-            resetPopoverHeight(for: generation)
-            return
-        }
-        AppDelegate.instance?.setPopoverHeight(collapsedPopoverHeight, animated: true)
-        withAnimation(.easeIn(duration: 0.18)) {
-            pomodoroPresented = false
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) {
-            guard generation == self.pomodoroTransitionGeneration else { return }
-            self.showPomodoro = false
-            self.resetPopoverHeight(for: generation)
-        }
-    }
-
-    private func resetPopoverHeight(for generation: Int) {
-        DispatchQueue.main.async {
-            guard generation == self.pomodoroTransitionGeneration else { return }
-            AppDelegate.instance?.setPopoverHeight(self.collapsedPopoverHeight)
         }
     }
 
@@ -1600,6 +1646,7 @@ private final class ProbeView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        PomodoroKeyProbe.log("WindowProbe viewDidMoveToWindow window=\(window.map { "#\($0.windowNumber) visible=\($0.isVisible) key=\($0.isKeyWindow) \(type(of: $0))" } ?? "nil")")
         if let window { onWindow(window) }   // nil moves handled by onDisappear
     }
 }
