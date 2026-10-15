@@ -5,45 +5,40 @@
 [![macOS 13+](https://img.shields.io/badge/macOS-13%2B-9cf)](#requirements)
 [![Swift 5.10](https://img.shields.io/badge/Swift-5.10-orange)](Package.swift)
 [![Two-way Reminders sync](https://img.shields.io/badge/Reminders-two--way_sync-2E7D32)](#features)
-[![Local AI: optional](https://img.shields.io/badge/Local_AI-Ollama_optional-7C3AED)](#optional-local-model-features)
-[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](#)
 
 **A keyboard-first Reminders companion for your macOS menu bar.**
 
 Type plain English — `pick up dry cleaning tomorrow at 5pm @errands` — and remr
 turns it into a real reminder, synced both ways with the Reminders app. Everything
-lives in the notch, one keystroke away, and the whole thing runs locally.
+lives in the notch, one keystroke away.
 
-> [!TIP]
-> ### ✨ Bulk Markdown → Reminders
-> Paste a whole Markdown plan into remr. Headings become tags, and a local Qwen
-> model interprets each item into a clean title, description, and deadline. Review
-> everything before anything is created.
+Prefer talking? Dictate a reminder and remr cleans it up. Optional local model
+features (off by default) add Markdown batch import and meaning-based search.
 
 <https://github.com/user-attachments/assets/09ed40d6-ada5-4551-8618-8e6bea71c3eb>
 
 > [!NOTE]
 > ### 🆕 What's new
 >
-> - **Little sun review nudges** — every 90–180 minutes the notch quietly grows two
->   slim wings: a smiling sun waves on the left, a review action waits on the right.
->   It retracts after 18 seconds, never steals keyboard focus, and respects Reduce Motion.
-> - **⌥Space opens remr** — a simpler default global shortcut, still rebindable in
+> - **Notch view** — remr opens at the top center of your screen, in your central
+>   vision. One keystroke from anywhere.
+> - **Little sun review nudges** — the notch grows two slim wings: a waving sun on the
+>   left, a review action on the right. It retracts after 18 seconds and never steals
+>   keyboard focus.
+> - **⌥Space opens remr** — simpler default global shortcut. Still rebindable in
 >   Settings → Shortcuts.
-> - **Calendar in the notch** — `⌥⌘C` opens the calendar from the top screen edge with a
->   prewarmed 220 ms reveal, and `C` flips between reminders and calendar in place.
-> - **Calmer glass** — sharper text fields, clearer glass, a shorter opening motion,
->   and a retracting close matched to the camera housing.
-> - **Tidier Settings** — four compact tabs with immediate changes and a persistent
->   shortcut save bar.
-> - **Rounded dropdowns** — lists, tags, snooze, and colors share one glass card style
->   with keyboard navigation.
+> - **Calendar in the notch** — `⌥⌘C` opens the calendar from the top edge. `C` flips
+>   between reminders and calendar in place.
+> - **Calmer glass** — sharper text fields, clearer glass, shorter opening motion, and a
+>   close matched to the camera housing.
+> - **Tidier Settings** — four compact tabs, immediate changes, persistent shortcut bar.
+> - **Rounded dropdowns** — lists, tags, snooze, and colors share one glass card style.
 > - **Raycast companion** — a new **Agenda** command in `raycast-extension/`.
 
 ## Contents
 
 - [Features](#features)
-  - [Capture](#-capture) · [Organize](#-organize) · [Plan](#-plan) · [Focus](#-focus) · [Local AI](#-local-ai-optional) · [Make it yours](#-make-it-yours)
+  - [Capture](#-capture) · [Organize](#-organize) · [Plan](#-plan) · [Focus](#-focus) · [Local AI](#-local-ai-optional)
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [Install remr](#install-remr)
 - [Optional: local model features](#optional-local-model-features)
@@ -128,16 +123,6 @@ features** to unlock:
   against your query on-device.
 - **Usage stats** — average request time, active time, battery usage, cache hits, and
   errors, shown only in aggregate and only locally.
-
-### 🎨 Make it yours
-
-- **Appearance** — Light, Dark, or Follow System, applied live to every window and popover.
-- **Menu bar icon** — choose the glyph (the fuller checklist is the default), its color,
-  and an optional overdue/due-today count badge.
-- **Notch panel** — resize the top-centered panel from 400 to 900 points, with an
-  optional gentle opening haptic on compatible trackpads.
-- **Shortcuts** — every global hotkey and in-app key is rebindable, with conflict
-  reporting and validation.
 
 ## Keyboard shortcuts
 
@@ -285,7 +270,3 @@ Scripts/morph-check.sh           # panel morph animation
 ## Requirements
 
 macOS 13 or later · Xcode or Command Line Tools · no third-party Swift dependencies
-
----
-
-Built by [Loic Lemon](https://github.com/Loic-Lemon). Not affiliated with Apple.
