@@ -20,11 +20,11 @@ final class VoiceLogStore: ObservableObject {
     static let shared = VoiceLogStore()
 
     @Published private(set) var entries: [VoiceLogEntry]
-    private let defaults = UserDefaults.standard
+    private let defaults = DemoEnvironment.defaults
     private let key = "remr.voiceLog"
 
     init() {
-        guard let data = UserDefaults.standard.data(forKey: "remr.voiceLog"),
+        guard let data = DemoEnvironment.defaults.data(forKey: "remr.voiceLog"),
               let saved = try? JSONDecoder().decode([VoiceLogEntry].self, from: data) else {
             entries = []
             return

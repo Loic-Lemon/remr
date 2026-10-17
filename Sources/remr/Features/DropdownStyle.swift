@@ -7,15 +7,13 @@ extension View {
 
 private struct DropdownSurface: ViewModifier {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    private let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
+    private let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
 
     @ViewBuilder
     func body(content: Content) -> some View {
         Group {
             if reduceTransparency {
                 content.background(Color(nsColor: .windowBackgroundColor), in: shape)
-            } else if #available(macOS 26.0, *) {
-                content.glassEffect(.regular.tint(Color.primary.opacity(0.025)), in: shape)
             } else {
                 content.background(.regularMaterial, in: shape)
             }
@@ -25,6 +23,124 @@ private struct DropdownSurface: ViewModifier {
             shape.strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.75)
                 .allowsHitTesting(false)
         }
+    }
+}
+
+/// Shared metrics and building blocks for every app-owned dropdown.
+enum DropdownMetrics {
+    static let width: CGFloat = 272
+    static let rowHeight: CGFloat = 36
+    static let rowSpacing: CGFloat = 2
+    static let rowInset: CGFloat = 7
+    static let rowStride = rowHeight + rowSpacing
+}
+
+struct DropdownHeader: View {
+    let title: String
+    var subtitle: String? = nil
+    var actionTitle: String? = nil
+    var actionDisabled = false
+    var onAction: () -> Void = {}
+    var onBack: (() -> Void)? = nil
+    var onClose: (() -> Void)? = nil
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if let onBack {
+                Button(action: onBack) {
+                    Image(systemName: "chevron.left").frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Back")
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.system(size: 13, weight: .semibold))
+                if let subtitle {
+                    Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 8)
+            if let actionTitle {
+                Button(actionTitle, action: onAction)
+                    .font(.system(size: 12, weight: .medium))
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.accentColor)
+                    .disabled(actionDisabled)
+            }
+            if let onClose {
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close \(title.lowercased())")
+            }
+        }
+        .padding(12)
+    }
+}
+
+struct DropdownSearchField: View {
+    let placeholder: String
+    @Binding var text: String
+    @FocusState.Binding var isFocused: Bool
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField(placeholder, text: $text)
+                .textFieldStyle(.plain)
+                .focused($isFocused)
+            if !text.isEmpty {
+                Button { text = ""; isFocused = true } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
+            }
+        }
+        .font(.system(size: 12))
+        .padding(.horizontal, 10)
+        .frame(height: 30)
+        .liquidGlassField(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .padding(.horizontal, 10)
+        .padding(.bottom, 8)
+    }
+}
+
+struct DropdownIcon: View {
+    let systemImage: String
+    var color: Color = .secondary
+    var body: some View {
+        Image(systemName: systemImage)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(color)
+            .frame(width: 24, height: 24)
+            .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+    }
+}
+
+struct DropdownSelectionMark: View {
+    let selected: Bool
+    var body: some View {
+        Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+            .font(.system(size: 15, weight: .medium))
+            .foregroundStyle(selected ? Color.accentColor : Color.secondary.opacity(0.35))
+    }
+}
+
+struct DropdownChevron: View {
+    let isPresented: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        Image(systemName: "chevron.down")
+            .font(.system(size: 9, weight: .semibold))
+            .rotationEffect(.degrees(isPresented ? 180 : 0))
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isPresented)
     }
 }
 
@@ -46,7 +162,7 @@ struct DropdownRowStyle: ButtonStyle {
             configuration.label
                 .font(.system(size: 12))
                 .padding(.horizontal, 10)
-                .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                .frame(maxWidth: .infinity, minHeight: DropdownMetrics.rowHeight, alignment: .leading)
                 .background {
                     RoundedRectangle(cornerRadius: 9, style: .continuous)
                         .fill(selected ? Color.accentColor.opacity(configuration.isPressed || hovered || highlighted ? 0.24 : 0.13)
@@ -113,8 +229,7 @@ struct RemrDropdown<Value: Hashable>: View {
                     Text(options.first(where: { $0.value == selection })?.title ?? "Choose…")
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 8, weight: .semibold))
+                    DropdownChevron(isPresented: isPresented)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -122,7 +237,7 @@ struct RemrDropdown<Value: Hashable>: View {
             .accessibilityLabel(title)
             .accessibilityValue(options.first(where: { $0.value == selection })?.title ?? "Choose")
             .background {
-                FastPopoverPresenter(isPresented: isPresented,
+                FastDropdownPresenter(isPresented: isPresented,
                                      content: AnyView(DropdownOptions(title: title, selection: selection,
                                                                      options: options, onSelect: {
                     selection = $0
@@ -143,29 +258,19 @@ private struct DropdownOptions<Value: Hashable>: View {
     @State private var highlighted: Value?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 10)
-                .padding(.top, 6)
-                .padding(.bottom, 4)
+        VStack(alignment: .leading, spacing: 0) {
+            DropdownHeader(title: title, onClose: onDismiss)
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(spacing: 2) {
+                    VStack(spacing: DropdownMetrics.rowSpacing) {
                         ForEach(options) { option in
                             Button { onSelect(option.value) } label: {
-                                HStack(spacing: 9) {
+                                HStack(spacing: 10) {
                                     if let image = option.systemImage {
-                                        Image(systemName: image)
-                                            .foregroundStyle(option.color ?? .secondary)
-                                            .frame(width: 16)
+                                        DropdownIcon(systemImage: image, color: option.color ?? .secondary)
                                     }
                                     Text(option.title).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
-                                    Image(systemName: "checkmark")
-                                        .font(.system(size: 10, weight: .semibold))
-                                        .foregroundStyle(Color.accentColor)
-                                        .opacity(option.value == selection ? 1 : 0)
+                                    DropdownSelectionMark(selected: option.value == selection)
                                 }
                             }
                             .buttonStyle(DropdownRowStyle(selected: option.value == selection,
@@ -175,15 +280,16 @@ private struct DropdownOptions<Value: Hashable>: View {
                         }
                     }
                 }
-                .frame(height: min(306, CGFloat(options.count) * 34))
+                .padding(.horizontal, DropdownMetrics.rowInset)
+                .padding(.bottom, 7)
+                .frame(height: min(306, CGFloat(options.count) * DropdownMetrics.rowStride + 7))
                 .onChange(of: highlighted) { value in
                     if let value { proxy.scrollTo(value) }
                 }
                 .onAppear { proxy.scrollTo(selection) }
             }
         }
-        .padding(7)
-        .frame(width: 272)
+        .frame(width: DropdownMetrics.width)
         .background(DropdownKeyHandler { event in
             switch event.keyCode {
             case 53: onDismiss()
@@ -200,29 +306,24 @@ private struct DropdownOptions<Value: Hashable>: View {
     }
 }
 
-/// Scope arrow/Return/Escape handling to this card's window.
-private struct DropdownKeyHandler: NSViewRepresentable {
+/// Register menu keys on the floating window without taking key focus.
+struct DropdownKeyHandler: NSViewRepresentable {
     let onKey: (NSEvent) -> Bool
-    func makeCoordinator() -> Coordinator { Coordinator() }
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        context.coordinator.view = view
-        context.coordinator.monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak coordinator = context.coordinator] event in
-            guard let coordinator, let window = coordinator.view?.window, event.window === window else { return event }
-            return coordinator.onKey?(event) == true ? nil : event
-        }
-        return view
+
+    func makeNSView(context: Context) -> HandlerView { HandlerView() }
+    func updateNSView(_ view: HandlerView, context: Context) {
+        view.onKey = onKey
+        (view.window as? FastDropdownPresenter.MenuPanel)?.onKey = onKey
     }
-    func updateNSView(_ view: NSView, context: Context) { context.coordinator.onKey = onKey }
-    static func dismantleNSView(_ view: NSView, coordinator: Coordinator) {
-        if let monitor = coordinator.monitor { NSEvent.removeMonitor(monitor) }
-        coordinator.monitor = nil
+    static func dismantleNSView(_ view: HandlerView, coordinator: Void) {
+        (view.window as? FastDropdownPresenter.MenuPanel)?.onKey = nil
     }
-    final class Coordinator {
-        weak var view: NSView?
+    final class HandlerView: NSView {
         var onKey: ((NSEvent) -> Bool)?
-        var monitor: Any?
-        deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            (window as? FastDropdownPresenter.MenuPanel)?.onKey = onKey
+        }
     }
 }
 
@@ -246,7 +347,7 @@ struct RemrActionMenu<Label: View>: View {
             .buttonStyle(DropdownTriggerStyle(isPresented: isPresented))
             .accessibilityLabel(title)
             .background {
-                FastPopoverPresenter(isPresented: isPresented,
+                FastDropdownPresenter(isPresented: isPresented,
                                      content: AnyView(DropdownActions(title: title, actions: actions,
                                                                      onDismiss: { isPresented = false })),
                                      onDismiss: { isPresented = false })
@@ -274,28 +375,18 @@ private struct DropdownActions: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                if !path.isEmpty {
-                    Button { path.removeLast(); highlighted = nil } label: {
-                        Image(systemName: "chevron.left").frame(width: 22, height: 22)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Back")
-                }
-                Text(currentTitle).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 10)
-            .padding(.top, 6)
-            .padding(.bottom, 4)
+        VStack(alignment: .leading, spacing: 0) {
+            DropdownHeader(title: currentTitle,
+                           onBack: path.isEmpty ? nil : { path.removeLast(); highlighted = nil },
+                           onClose: onDismiss)
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(spacing: 2) {
+                    VStack(spacing: DropdownMetrics.rowSpacing) {
                         ForEach(Array(currentActions.enumerated()), id: \.offset) { index, item in
                             Button { activate(index) } label: {
-                                HStack(spacing: 9) {
+                                HStack(spacing: 10) {
                                     if let image = item.systemImage {
-                                        Image(systemName: image).frame(width: 16).foregroundStyle(.secondary)
+                                        DropdownIcon(systemImage: image, color: item.destructive ? .red : .secondary)
                                     }
                                     Text(item.title).frame(maxWidth: .infinity, alignment: .leading)
                                     if !item.children.isEmpty {
@@ -309,13 +400,14 @@ private struct DropdownActions: View {
                         }
                     }
                 }
-                .frame(height: min(340, CGFloat(currentActions.count) * 34))
+                .padding(.horizontal, DropdownMetrics.rowInset)
+                .padding(.bottom, 7)
+                .frame(height: min(340, CGFloat(currentActions.count) * DropdownMetrics.rowStride + 7))
                 .onChange(of: highlighted) { if let index = $0 { proxy.scrollTo(index) } }
                 .onChange(of: path) { _ in proxy.scrollTo(0) }
             }
         }
-        .padding(7)
-        .frame(width: 252)
+        .frame(width: DropdownMetrics.width)
         .background(DropdownKeyHandler { event in
             switch event.keyCode {
             case 53: onDismiss()

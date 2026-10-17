@@ -43,6 +43,7 @@ struct NewReminderView: View {
     @State private var completionContext: CompletionContext?
     @State private var selectedSuggestion = 0
     @State private var titleFocused = false
+    @State private var notesFocused = false
     @State private var replaceTokenRequest = 0
     @State private var replaceTokenWith = ""
     @State private var replaceTokenRange: NSRange?
@@ -85,14 +86,17 @@ struct NewReminderView: View {
     /// sits directly on the panel's glass, so the panel's liquid-glass look
     /// never changes as the description expands.
     var hasOwnGlass: Bool = true
-    init(titleFocusRequest: Int = 0,
+    var autofocus: Bool = true
+    init(initialText: String = "",
+         titleFocusRequest: Int = 0,
          notesFocusRequestExternal: Int = 0,
          onTabForward: (() -> Void)? = nil,
          onTabBackFromTitle: (() -> Void)? = nil,
          onEscape: (() -> Void)? = nil,
          onBulkPreview: ((String) -> Void)? = nil,
          onCreated: (() -> Void)? = nil,
-         hasOwnGlass: Bool = true) {
+         hasOwnGlass: Bool = true,
+         autofocus: Bool = true) {
         self.titleFocusRequest = titleFocusRequest
         self.notesFocusRequestExternal = notesFocusRequestExternal
         self.onTabForward = onTabForward
@@ -101,7 +105,8 @@ struct NewReminderView: View {
         self.onBulkPreview = onBulkPreview
         self.onCreated = onCreated
         self.hasOwnGlass = hasOwnGlass
-        _title = State(initialValue: "")
+        self.autofocus = autofocus
+        _title = State(initialValue: initialText)
     }
 
     /// The editor's content. With `hasOwnGlass` (in-app popover) the whole
@@ -128,7 +133,7 @@ struct NewReminderView: View {
             // preview, matching Search without overlapping inner borders.
         }
         if hasOwnGlass {
-            content.liquidGlassInputField(focused: titleFocused || focusedField == .notes)
+            content.modifier(TaskComposerFocusStyle(isFocused: titleFocused || notesFocused))
         } else {
             content
         }
@@ -159,8 +164,9 @@ struct NewReminderView: View {
             }
         }
         .onAppear {
-            focusedField = .title
             recomputePreview()
+            guard autofocus else { return }
+            focusedField = .title
             // The containing window becomes key a moment after this appears;
             // a focus request issued before then can be dropped by the focus
             // system, so re-request once the window is actually key.
@@ -188,13 +194,13 @@ struct NewReminderView: View {
             }
             ZStack(alignment: .topLeading) {
                 ReminderInputView(
-                    text: $title, refocusOnClear: true, onMoveDown: titleReturnPressed,
+                    text: $title, refocusOnClear: autofocus, onMoveDown: titleReturnPressed,
                     focusRequest: titleFocusBump,
                     // Fires when the field appears in a window without already
                     // owning first responder — the panel opens with the window
                     // not yet key, when a SwiftUI @FocusState request is dropped.
                     // The AppKit makeFirstResponder path lands reliably.
-                    onAppearInWindow: { titleFocusBump += 1 },
+                    onAppearInWindow: { if autofocus { titleFocusBump += 1 } },
                     onTokenChange: { context in completionContext = context; selectedSuggestion = 0 },
                     onFocusChange: { titleFocused = $0 },
                     dropdownActive: titleFocused && !suggestionMatches.isEmpty,
@@ -217,7 +223,7 @@ struct NewReminderView: View {
                 if title.isEmpty {
                     Text(hasOwnGlass ? "Add a task…" : "e.g. Take out the trash before end of day @home")
                         .font(.body)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(titleFocused ? .primary : .secondary)
                         .padding(.top, 8)
                         .padding(.leading, 5)
                         .allowsHitTesting(false)
@@ -235,6 +241,7 @@ struct NewReminderView: View {
         ZStack(alignment: .topLeading) {
             ReminderInputView(text: $notes, onSubmit: submit, focusRequest: notesFocusRequest,
                               onAppearInWindow: { focusedField = .title },
+                              onFocusChange: { notesFocused = $0 },
                               onFocusForward: { onTabForward?() },
                               onFocusBack: { focusedField = .title; titleFocusBump += 1 },
                               onEscape: onEscape)
@@ -585,7 +592,7 @@ struct NewReminderView: View {
             saveError = locationMessage
             if title == titleAtSubmit { title = "" }
             if notes == notesAtSubmit { notes = "" }
-            focusedField = .title
+            focusedField = autofocus ? .title : nil
         } catch {
             saveError = error.localizedDescription
         }

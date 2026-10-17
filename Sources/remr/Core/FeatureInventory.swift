@@ -55,6 +55,9 @@ struct FeatureInventoryItem: Identifiable {
 enum FeatureInventory {
     static let all: [FeatureInventoryItem] = [
         FeatureInventoryItem(
+            name: "Isolated demo mode",
+            summary: "A separate demo bundle uses fictional in-memory reminders and isolated settings, resetting on launch without accessing Apple Reminders."),
+        FeatureInventoryItem(
             name: "Reminders permission",
             summary: "Requests and tracks Reminders access, including denied and not-determined states."),
         FeatureInventoryItem(
@@ -75,6 +78,9 @@ enum FeatureInventory {
         FeatureInventoryItem(
             name: "Single reminder creation",
             summary: "Creates reminders from a compact rounded glass composer matching Search, with title, notes, parsed fields, and validation."),
+        FeatureInventoryItem(
+            name: "Raycast Add Reminder",
+            summary: "Creates natural-language reminders from Raycast with save confirmation; ⌘Return opens the prefilled remr composer for review."),
         FeatureInventoryItem(
             name: "Quick Add",
             summary: "Opens a focused reminder composer from anywhere with a global shortcut."),
@@ -98,13 +104,13 @@ enum FeatureInventory {
             summary: "Selects a custom date, toggles timed or all-day behavior, and clears an existing due date."),
         FeatureInventoryItem(
             name: "Keyboard navigation",
-            summary: "Supports keyboard selection, completion, editing, search, recovery, undo, and focus movement."),
+            summary: "Supports keyboard selection, completion, editing, search, recovery, undo, and focus movement. The main app opens without text focus so P and C work immediately; Space focuses Add a task, and Escape leaves the editor."),
         FeatureInventoryItem(
             name: "Organized settings",
             summary: "Groups preferences into four compact tabs with rounded cards, immediate preference changes, and a persistent shortcut save bar. Replaces the reminder controls while open, clips scrolling controls to the viewport, and discovers microphones off the main thread only in the voice section."),
         FeatureInventoryItem(
             name: "Shortcut customization",
-            summary: "Uses ⌥Space to open remr by default, with separate global and in-app shortcut groups, wrapping editable keycaps that stay inside narrow panels, validation, and conflict reporting."),
+            summary: "Uses ⌥Space to open remr by default with the menu bar icon’s native selection flash, with separate global and in-app shortcut groups, wrapping editable keycaps that stay inside narrow panels, validation, and conflict reporting."),
         FeatureInventoryItem(
             name: "Appearance modes",
             summary: "Supports Light, Dark, and Follow System with live application to every window and popover."),
@@ -122,16 +128,22 @@ enum FeatureInventory {
             summary: "Opens reminders from the top screen edge with smaller 14-point shoulders, a window-backdrop blur, adaptive native glass on macOS 26, directional light, and a soft black blend into the camera housing."),
         FeatureInventoryItem(
             name: "Search field appearance",
-            summary: "Uses matching rounded glass behind crisp search and composer text, compact side spacing, a subtle focus ring, and larger toolbar hover targets."),
+            summary: "Uses compact rounded search and composer fields, subtle focus outlines, and larger toolbar hover targets."),
+        FeatureInventoryItem(
+            name: "Task composer focus appearance",
+            summary: "Keeps the original compact task bar and native text/glass treatment. Focus adds a centered lift and a slowly shifting navy/indigo sky with an oversized, softly blurred moon cropped by the field, clouds and stars that wander smoothly in two dimensions, occasional star twinkles, and a 25% chance of one shooting star per opening; text stays steady, motion pauses when hidden, and Reduce Motion uses a static treatment."),
         FeatureInventoryItem(
             name: "Notch panel motion",
-            summary: "Opens in 280 ms with a fixed-size blur and a moving glass rim, reuses warmed content, refreshes after opening, and reveals reminders only when motion finishes; respects Reduce Motion."),
+            summary: "Opens in 280 ms with a fixed-size blur and a moving glass rim, reuses warmed content, refreshes after opening, and reveals reminders and native-glass search/tag controls together only when motion finishes; respects Reduce Motion."),
+        FeatureInventoryItem(
+            name: "Opening animation speed",
+            summary: "Chooses Slow, Normal, Fast, or Off for panel presentation; Reduce Motion disables animation."),
         FeatureInventoryItem(
             name: "Notch panel width",
             summary: "Adjusts the top-centred panel from 400 to 900 points with live resizing."),
         FeatureInventoryItem(
-            name: "Notch opening haptic",
-            summary: "Optionally gives a gentle opening tap on compatible trackpads."),
+            name: "Screen opening haptics",
+            summary: "Optionally gives the same gentle trackpad tap when opening screens, navigating pages, or presenting popovers, with one app-wide toggle in Panel settings."),
         FeatureInventoryItem(
             name: "Little sun review nudge",
             summary: "The notch widens into two slim menu-bar wings, with a smiling sun continuously waving and gently spinning back and forth on the left and a review action on the right; click to review, dismiss, or let it retract after 18 seconds without taking keyboard focus."),

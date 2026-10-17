@@ -50,7 +50,7 @@ final class PomodoroTimerStore: ObservableObject {
     private let focusKey = "remr.pomodoro.focusMinutes"
     private let shortBreakKey = "remr.pomodoro.shortBreakMinutes"
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = DemoEnvironment.defaults) {
         self.defaults = defaults
         let loadedPhase = PomodoroPhase(rawValue: defaults.string(forKey: phaseKey) ?? "") ?? .focus
         let loadedFocus = Self.minutes(defaults.integer(forKey: focusKey), fallback: 25)

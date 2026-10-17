@@ -11,7 +11,7 @@ final class TagStore: ObservableObject {
 
     /// Tag name (lowercased) → palette index override, persisted.
     @Published private(set) var overrides: [String: Int] = [:]
-    private let defaults = UserDefaults.standard
+    private let defaults = DemoEnvironment.defaults
     private let overrideKey = "remr.tagColorOverrides"
 
     private static let names = [

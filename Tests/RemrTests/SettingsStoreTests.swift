@@ -9,6 +9,40 @@ final class SettingsStoreTests: XCTestCase {
         UserDefaults(suiteName: "remr.test.appearance.\(UUID().uuidString)")!
     }
 
+    func testOpeningAnimationDefaultsAndInvalidValue() {
+        let defaults = makeDefaults()
+        XCTAssertEqual(SettingsStore(defaults: defaults).openingAnimationSpeed, .normal)
+        defaults.set("invalid", forKey: "remr.openingAnimationSpeed")
+        XCTAssertEqual(SettingsStore(defaults: defaults).openingAnimationSpeed, .normal)
+    }
+
+    func testOpeningAnimationSpeedPersistsEveryOption() {
+        let defaults = makeDefaults()
+        let store = SettingsStore(defaults: defaults)
+        for speed in OpeningAnimationSpeed.allCases {
+            store.setOpeningAnimationSpeed(speed)
+            XCTAssertEqual(SettingsStore(defaults: defaults).openingAnimationSpeed, speed)
+        }
+    }
+
+    func testRevealScalesTimingAndOffRevealsContentImmediately() {
+        let reveal = NotchRevealController(duration: 0.28, contentFadeDuration: 0.1)
+        reveal.animationSpeed = .fast
+        XCTAssertEqual(reveal.duration, 0.14, accuracy: 0.001)
+        XCTAssertEqual(reveal.contentFadeDuration, 0.05, accuracy: 0.001)
+        XCTAssertEqual(reveal.closingDuration, 0.21, accuracy: 0.001)
+        reveal.animationSpeed = .off
+        reveal.open(animated: true)
+        XCTAssertTrue(reveal.widthRevealed)
+        XCTAssertTrue(reveal.heightRevealed)
+        XCTAssertTrue(reveal.contentRevealed)
+        XCTAssertEqual(reveal.duration, 0)
+        reveal.retract()
+        XCTAssertFalse(reveal.widthRevealed)
+        XCTAssertFalse(reveal.heightRevealed)
+        XCTAssertFalse(reveal.contentRevealed)
+    }
+
     func testDefaultsToFollowSystem() {
         let defaults = makeDefaults()
         let store = SettingsStore(defaults: defaults)

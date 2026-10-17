@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 /// Tag-filter control beside Search. The picker is hosted in an AppKit
-/// NSPopover shared with the other toolbar pickers: it cannot be clipped by
+/// floating menu shared with the other dropdowns: it cannot be clipped by
 /// the main surface, owns outside-click dismissal, and opens immediately.
 struct TagFilterMenu: View {
     let allTags: [String]
@@ -32,10 +32,9 @@ struct TagFilterMenu: View {
                     .font(.system(size: 12, weight: .medium))
                 Text(filterStore.tag.map { "#\($0)" } ?? "Tags")
                     .lineLimit(1)
-                Image(systemName: isPresented ? "chevron.up" : "chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
+                DropdownChevron(isPresented: isPresented)
             }
-            .font(.caption.weight(.medium))
+            .font(.system(size: 12, weight: .medium))
             .foregroundStyle(controlColor)
         }
         .buttonStyle(DropdownTriggerStyle(isPresented: isPresented))
@@ -58,7 +57,7 @@ struct TagFilterMenu: View {
         }
         .help(filterStore.tag.map { "Filtered by #\($0) — click to change" } ?? "Filter by tag")
         .background {
-            FastPopoverPresenter(
+            FastDropdownPresenter(
                 isPresented: isPresented,
                 content: AnyView(
                     TagPickerContent(
@@ -93,7 +92,7 @@ private enum PickerHighlight: Equatable {
     case manage
 }
 
-/// The actual picker content hosted by the native popover window.
+/// The searchable tag menu, using the same layout as the list picker.
 private struct TagPickerContent: View {
     let allTags: [String]
     let tagCounts: [String: Int]
@@ -107,8 +106,6 @@ private struct TagPickerContent: View {
     @State private var search = ""
     @State private var highlighted: PickerHighlight?
     @State private var keyboardScrollTarget: PickerHighlight?
-    @State private var keyMonitor: Any?
-    @State private var pickerWindow: NSWindow?
     @FocusState private var searchFocused: Bool
 
     private var activeTag: String? { filterStore.tag }
@@ -134,35 +131,14 @@ private struct TagPickerContent: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 7) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                TextField("Search tags", text: $search)
-                    .textFieldStyle(.plain)
-                    .focused($searchFocused)
-                if !search.isEmpty {
-                    Button {
-                        search = ""
-                        searchFocused = true
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Clear tag search")
-                }
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .frame(minHeight: 30)
-            .liquidGlassField(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .padding(8)
-
-            Divider()
+            DropdownHeader(title: "Tags",
+                           subtitle: activeTag.map { "Filtered by #\($0)" } ?? "\(allTags.count) tags available",
+                           onClose: onDismiss)
+            DropdownSearchField(placeholder: "Search tags", text: $search, isFocused: $searchFocused)
 
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(spacing: 1) {
+                    VStack(spacing: DropdownMetrics.rowSpacing) {
                         allTagsRow
                             .id(rowID(.all))
 
@@ -185,9 +161,11 @@ private struct TagPickerContent: View {
                             }
                         }
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
+                    .padding(.horizontal, DropdownMetrics.rowInset)
+                    .padding(.vertical, 4)
                 }
+                .frame(height: min(260, CGFloat(matchingTags.count + 1) * DropdownMetrics.rowStride
+                                   + (matchingTags.isEmpty ? 62 : 8)))
                 .scrollIndicators(.hidden)
                 .onChange(of: keyboardScrollTarget) { target in
                     guard let target else { return }
@@ -195,15 +173,13 @@ private struct TagPickerContent: View {
                 }
             }
 
-            Divider()
+            Divider().opacity(0.45).padding(.horizontal, 12)
 
             Button(action: onManage) {
-                HStack(spacing: 7) {
-                    Image(systemName: "gearshape")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                HStack(spacing: 10) {
+                    DropdownIcon(systemImage: "gearshape")
                     Text("Manage Tags")
-                        .font(.caption.weight(.medium))
+                        .font(.system(size: 12, weight: .medium))
                     Spacer()
                     Image(systemName: "chevron.right")
                         .font(.caption2)
@@ -217,17 +193,13 @@ private struct TagPickerContent: View {
                 highlighted = hovering ? .manage : (highlighted == .manage ? nil : highlighted)
             }
         }
-        .frame(width: 252, height: 300)
+        .frame(width: DropdownMetrics.width)
         .liquidGlassGrouping()
-        .background(PickerWindowProbe { pickerWindow = $0 })
+        .background(DropdownKeyHandler(onKey: handleKey))
         .onAppear {
             DispatchQueue.main.async {
                 searchFocused = true
             }
-            installKeyMonitor()
-        }
-        .onDisappear {
-            removeKeyMonitor()
         }
         .onChange(of: search) { _ in
             highlighted = nil
@@ -241,19 +213,12 @@ private struct TagPickerContent: View {
             filterStore.clear()
             onDismiss()
         } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "tag")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 11, height: 11)
+            HStack(spacing: 10) {
+                DropdownIcon(systemImage: "tag")
                 Text("All tags")
-                    .font(.caption.weight(.medium))
+                    .font(.system(size: 12, weight: .medium))
                     .frame(maxWidth: .infinity, alignment: .leading)
-                if activeTag == nil {
-                    Image(systemName: "checkmark")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(Color.accentColor)
-                }
+                DropdownSelectionMark(selected: activeTag == nil)
             }
         }
         .buttonStyle(DropdownRowStyle(selected: activeTag == nil, highlighted: highlighted == .all))
@@ -263,30 +228,24 @@ private struct TagPickerContent: View {
         }
     }
 
-    /// One tag row: color dot, name, matching reminder count, active check.
+    /// One tag row: tinted icon, name, matching reminder count, selection mark.
     private func tagRow(_ tag: String) -> some View {
         Button {
             onSelect(tag)
         } label: {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(tagStore.color(for: tag))
-                    .frame(width: 9, height: 9)
+            HStack(spacing: 10) {
+                DropdownIcon(systemImage: "tag.fill", color: tagStore.color(for: tag))
                 Text("#\(tag)")
-                    .font(.caption)
+                    .font(.system(size: 12))
                     .fontWeight(tag == activeTag ? .medium : .regular)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if let count = tagCounts[tag], count > 0 {
                     Text("\(count)")
-                        .font(.caption2)
+                        .font(.system(size: 11))
                         .monospacedDigit()
                         .foregroundStyle(.tertiary)
                 }
-                if tag == activeTag {
-                    Image(systemName: "checkmark")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(Color.accentColor)
-                }
+                DropdownSelectionMark(selected: tag == activeTag)
             }
         }
         .buttonStyle(DropdownRowStyle(selected: tag == activeTag, highlighted: highlighted == .tag(tag)))
@@ -298,44 +257,25 @@ private struct TagPickerContent: View {
 
     // MARK: - Keyboard
 
-    private func installKeyMonitor() {
-        guard keyMonitor == nil else { return }
-        // Local monitor mirrors MainView's: the popover's events arrive in
-        // its own window, so MainView's monitor passes them through untouched.
-        // All mutable state here is reference-backed (@State/ObservedObject),
-        // so the captured struct copy always reads current values; the monitor
-        // is removed on disappear, breaking the dispatcher → closure cycle.
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { event in
-            guard let pickerWindow, event.window === pickerWindow else { return event }
-            switch event.keyCode {
-            case 53: // Esc — clear the search first, then close.
-                if !search.isEmpty {
-                    search = ""
-                    searchFocused = true
-                } else {
-                    onDismiss()
-                }
-                return nil
-            case 36, 76: // Return / keypad Enter
-                activateHighlight()
-                return nil
-            case 125: // Down
-                moveHighlight(+1)
-                return nil
-            case 126: // Up
-                moveHighlight(-1)
-                return nil
-            default:
-                return event
+    private func handleKey(_ event: NSEvent) -> Bool {
+        switch event.keyCode {
+        case 53: // Escape clears the search before closing the menu.
+            if !search.isEmpty {
+                search = ""
+                searchFocused = true
+            } else {
+                onDismiss()
             }
+        case 36, 76:
+            activateHighlight()
+        case 125:
+            moveHighlight(+1)
+        case 126:
+            moveHighlight(-1)
+        default:
+            return false
         }
-    }
-
-    private func removeKeyMonitor() {
-        if let keyMonitor {
-            NSEvent.removeMonitor(keyMonitor)
-            self.keyMonitor = nil
-        }
+        return true
     }
 
     private func moveHighlight(_ delta: Int) {
@@ -365,32 +305,6 @@ private struct TagPickerContent: View {
         case nil:
             if let first = matchingTags.first {
                 onSelect(first)
-            }
-        }
-    }
-}
-
-/// Tracks the picker window so its keyboard monitor cannot intercept other views.
-private struct PickerWindowProbe: NSViewRepresentable {
-    let onWindow: (NSWindow?) -> Void
-
-    func makeNSView(context: Context) -> Probe {
-        let view = Probe()
-        view.onWindow = onWindow
-        return view
-    }
-
-    func updateNSView(_ view: Probe, context: Context) {
-        view.onWindow = onWindow
-    }
-
-    final class Probe: NSView {
-        var onWindow: ((NSWindow?) -> Void)?
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                self.onWindow?(self.window)
             }
         }
     }

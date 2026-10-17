@@ -15,7 +15,9 @@ lives in the notch, one keystroke away.
 Prefer talking? Dictate a reminder and remr cleans it up. Optional local model
 features (off by default) add Markdown batch import and meaning-based search.
 
-<https://github.com/user-attachments/assets/09ed40d6-ada5-4551-8618-8e6bea71c3eb>
+[![Watch the remr demo: the notch panel with fictional reminders](assets/demo-poster.jpg)](assets/new_demo.mp4)
+
+[Watch the demo](assets/new_demo.mp4) · 20 seconds · Sample reminder data
 
 > [!NOTE]
 > ### 🆕 What's new
@@ -141,7 +143,8 @@ Everything below is rebindable in **Settings → Shortcuts**.
 | Focus search | `⌘F` |
 | Move selection | `↑` `↓` |
 | Move a page | `PageUp` `PageDown` |
-| Scroll | `Space` / `⇧Space` |
+| Focus Add a task (while browsing reminders) | `Space` |
+| Scroll up | `⇧Space` |
 | Open recovery | `←` |
 | Complete / restore row | `Return` |
 | Open in Reminders | `⌘Return` |
@@ -225,10 +228,16 @@ normalizes the deadline wording; remr resolves the final date.
 
 ## Raycast extension
 
-The `raycast-extension/` folder adds a Raycast command, **Agenda**, that opens remr's
-calendar from Raycast through the `remr://calendar` URL scheme. remr must be installed
-(`./install.sh`) for the scheme to resolve; the extension itself is a thin launcher and
-does not read Reminders directly. See
+The `raycast-extension/` folder adds two commands:
+
+- **Agenda** opens remr's calendar.
+- **Add Reminder** creates a reminder from natural language such as
+  `send invoice tomorrow @work`. Press Return to create it, or ⌘Return to review
+  it in remr's prefilled composer first. Raycast confirms after the reminder is
+  saved and keeps your input when creation fails.
+
+remr must be installed (`./install.sh`). The extension hands parsing and saving
+to remr through its URL scheme and does not read Reminders directly. See
 [`raycast-extension/README.md`](raycast-extension/README.md) to develop it locally.
 
 ## Privacy
@@ -245,6 +254,10 @@ does not read Reminders directly. See
 
 ## Development
 
+For an isolated app with fictional reminders and the planned recording sequence,
+see [the demo runbook](docs/DEMO.md). `Scripts/demo.sh prepare` builds it without
+starting a recording or accessing your reminders.
+
 ```bash
 swift build -c release    # build
 ./install.sh              # build, install to /Applications, and relaunch
@@ -260,6 +273,7 @@ Scripts/review-nudge-check.sh    # review nudge scheduling
 Scripts/notch-calendar-check.sh  # calendar layout
 Scripts/dropdown-check.sh        # dropdown geometry
 Scripts/morph-check.sh           # panel morph animation
+Scripts/composer-check.sh        # task bar geometry, native focus, and reveal gating
 ```
 
 > [!IMPORTANT]

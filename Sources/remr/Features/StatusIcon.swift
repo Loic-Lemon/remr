@@ -148,7 +148,7 @@ enum StatusIcon {
     /// The composite keeps the base's template state. For Automatic the disc
     /// stays a template: the system tints it with the menu bar foreground and
     /// punches the digits out to the menu bar background, so the badge adapts
-    /// to light and dark menu bars. Accent and Custom styles bake red-on-white
+    /// to light and dark menu bars. Accent and Custom styles bake white-on-red
     /// as drawn.
     private static func badged(_ base: NSImage, count: Int, isTemplate: Bool) -> NSImage {
         let result = canvas { rect in
@@ -167,9 +167,18 @@ enum StatusIcon {
                 .foregroundColor: NSColor.white
             ]
             let textSize = text.size(withAttributes: attributes)
-            text.draw(at: NSPoint(x: center.x - textSize.width / 2,
-                                  y: center.y - textSize.height / 2),
-                      withAttributes: attributes)
+            let textOrigin = NSPoint(x: center.x - textSize.width / 2,
+                                     y: center.y - textSize.height / 2)
+            if isTemplate {
+                // Template tinting uses only alpha, so opaque white digits
+                // disappear into the opaque disc. Erase their shape instead.
+                let digits = canvas { _ in
+                    text.draw(at: textOrigin, withAttributes: attributes)
+                }
+                digits.draw(in: rect, from: .zero, operation: .destinationOut, fraction: 1)
+            } else {
+                text.draw(at: textOrigin, withAttributes: attributes)
+            }
         }
         result.isTemplate = isTemplate
         result.accessibilityDescription = base.accessibilityDescription

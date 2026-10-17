@@ -8,67 +8,46 @@ struct QuickAddView: View {
     @EnvironmentObject private var store: ReminderStore
     @EnvironmentObject private var settings: SettingsStore
 
-    /// A new identity is supplied for every popup presentation so the editor's
-    /// text, focus, and parse preview never leak between sessions.
+    /// Shared with the AppKit panel so the glass fills the entire window.
+    static let width: CGFloat = 560
+
+    /// A new identity resets text, focus, and parse preview on every opening.
     let sessionID: UUID
+    let onHeightChange: (CGFloat) -> Void
+    let initialText: String
     let onCancel: () -> Void
     let onCreated: () -> Void
 
     init(sessionID: UUID,
+         initialText: String = "",
          onCancel: @escaping () -> Void,
-         onCreated: @escaping () -> Void) {
+         onCreated: @escaping () -> Void,
+         onHeightChange: @escaping (CGFloat) -> Void = { _ in }) {
         self.sessionID = sessionID
+        self.onHeightChange = onHeightChange
+        self.initialText = initialText
         self.onCancel = onCancel
         self.onCreated = onCreated
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider()
-                .opacity(0.45)
+        QuickAddSurface(onHeightChange: onHeightChange) {
             content
         }
-        .frame(width: 440)
-        .liquidGlassPopup()
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Quick add reminder")
         .onExitCommand(perform: onCancel)
-    }
-    private var header: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "plus.circle.fill")
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(AppPalette.popupAccent)
-                .accessibilityHidden(true)
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Quick add reminder")
-                    .font(.headline)
-                Text("Return saves · Esc dismisses")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            }
-
-            Spacer(minLength: 8)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
     }
 
     @ViewBuilder
     private var content: some View {
         switch store.accessState {
         case .authorized:
-            // The editor sits directly on the panel's glass (no inner glass
-            // surface), so the liquid-glass look stays constant as the
-            // description expands; the unfold is pure SwiftUI inside the
-            // fixed-size panel.
-            NewReminderView(onEscape: onCancel, onCreated: onCreated, hasOwnGlass: false)
+            // Use the same focused input surface as the main notch panel.
+            NewReminderView(initialText: initialText, onEscape: onCancel, onCreated: onCreated)
                 .id(sessionID)
                 .environmentObject(store)
                 .environmentObject(settings)
-                .padding(.bottom, 2)
         case .notDetermined:
             permissionView(
                 icon: "checklist",
@@ -130,5 +109,21 @@ struct QuickAddView: View {
     private func openRemindersSettings() {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Reminders") else { return }
         NSWorkspace.shared.open(url)
+    }
+}
+
+/// The popup has no spare vertical space: its window follows this padded
+/// content's height, including the composer's animated expansion.
+struct QuickAddSurface<Content: View>: View {
+    let onHeightChange: (CGFloat) -> Void
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        content
+            .padding(12)
+            .frame(width: QuickAddView.width)
+            .fixedSize(horizontal: false, vertical: true)
+            .liquidGlassPopup(frosted: true)
+            .background(HeightReader(onChange: onHeightChange))
     }
 }

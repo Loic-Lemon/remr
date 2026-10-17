@@ -98,6 +98,7 @@ struct FastPopoverPresenter: NSViewRepresentable {
                       anchor.window != nil, !anchor.bounds.isEmpty else { return }
                 popover.show(relativeTo: anchor.bounds, of: anchor,
                              preferredEdge: self.preferAbove ? .maxY : .minY)
+                if popover.isShown { AppHaptics.screenOpened() }
                 self.applyAppearance(to: popover)
             }
         }

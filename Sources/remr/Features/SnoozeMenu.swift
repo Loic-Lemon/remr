@@ -10,39 +10,42 @@ struct SnoozeMenu: View {
     let onClear: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            snoozeButton("1 hour", systemImage: "clock") {
-                onChoice(.oneHour)
-            }
-            snoozeButton("Later today", systemImage: "sun.max") {
-                onChoice(.laterToday)
-            }
-            snoozeButton("Tomorrow morning", systemImage: "sunrise") {
-                onChoice(.tomorrowMorning)
-            }
-            snoozeButton("Tomorrow evening", systemImage: "sunset") {
-                onChoice(.tomorrowEvening)
-            }
-            snoozeButton("Next Monday", systemImage: "calendar") {
-                onChoice(.nextMonday)
-            }
-            snoozeButton("This weekend", systemImage: "moon.zzz") {
-                onChoice(.thisWeekend)
-            }
+        VStack(alignment: .leading, spacing: 0) {
+            DropdownHeader(title: "Snooze")
+            VStack(alignment: .leading, spacing: DropdownMetrics.rowSpacing) {
+                snoozeButton("1 hour", systemImage: "clock") {
+                    onChoice(.oneHour)
+                }
+                snoozeButton("Later today", systemImage: "sun.max") {
+                    onChoice(.laterToday)
+                }
+                snoozeButton("Tomorrow morning", systemImage: "sunrise") {
+                    onChoice(.tomorrowMorning)
+                }
+                snoozeButton("Tomorrow evening", systemImage: "sunset") {
+                    onChoice(.tomorrowEvening)
+                }
+                snoozeButton("Next Monday", systemImage: "calendar") {
+                    onChoice(.nextMonday)
+                }
+                snoozeButton("This weekend", systemImage: "moon.zzz") {
+                    onChoice(.thisWeekend)
+                }
 
-            Divider()
-                .padding(.vertical, 4)
+                Divider()
+                    .padding(.vertical, 4)
 
-            snoozeButton("Pick date/time", systemImage: "calendar.badge.clock") {
-                onCustom()
+                snoozeButton("Pick date/time", systemImage: "calendar.badge.clock") {
+                    onCustom()
+                }
+                snoozeButton("Clear due date", systemImage: "xmark.circle") {
+                    onClear()
+                }
             }
-            snoozeButton("Clear due date", systemImage: "xmark.circle") {
-                onClear()
-            }
+            .padding(.horizontal, DropdownMetrics.rowInset)
+            .padding(.bottom, 7)
         }
-        .padding(8)
-        .frame(width: 252)
-
+        .frame(width: DropdownMetrics.width)
         .liquidGlassGrouping()
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Snooze options")
@@ -52,9 +55,10 @@ struct SnoozeMenu: View {
                               systemImage: String,
                               action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Label(title, systemImage: systemImage)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
+            HStack(spacing: 10) {
+                DropdownIcon(systemImage: systemImage)
+                Text(title).frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .buttonStyle(DropdownRowStyle())
         .accessibilityLabel(title)

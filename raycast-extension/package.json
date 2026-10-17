@@ -2,11 +2,15 @@
   "$schema": "https://www.raycast.com/schemas/extension.json",
   "name": "remr",
   "title": "Remr",
-  "description": "See and complete your Reminders from Raycast.",
-  "icon": "assets/icon.png",
+  "description": "Create reminders and open your agenda in Remr.",
+  "icon": "icon.png",
   "author": "Loic-Lemon",
-  "platforms": ["macOS"],
-  "categories": ["Productivity"],
+  "platforms": [
+    "macOS"
+  ],
+  "categories": [
+    "Productivity"
+  ],
   "license": "MIT",
   "commands": [
     {
@@ -14,8 +18,33 @@
       "title": "Agenda",
       "subtitle": "Open calendar view",
       "description": "Open the calendar view in Remr.",
-      "keywords": ["remr", "calendar", "schedule"],
+      "keywords": [
+        "remr",
+        "calendar",
+        "schedule"
+      ],
       "mode": "no-view"
+    },
+    {
+      "name": "add-reminder",
+      "title": "Add Reminder",
+      "subtitle": "Remr",
+      "description": "Create a reminder using natural language, or review it in remr before saving.",
+      "keywords": [
+        "remr",
+        "task",
+        "capture",
+        "quick add"
+      ],
+      "mode": "view",
+      "arguments": [
+        {
+          "name": "text",
+          "placeholder": "send invoice tomorrow @work",
+          "type": "text",
+          "required": false
+        }
+      ]
     }
   ],
   "dependencies": {
@@ -23,8 +52,8 @@
     "@raycast/utils": "^1.17.0"
   },
   "devDependencies": {
-    "@types/node": "^20.11.24",
-    "@types/react": "^18.3.3",
+    "@types/node": "^22.19.17",
+    "@types/react": "^19.0.10",
     "typescript": "^5.4.5"
   },
   "scripts": {

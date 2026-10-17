@@ -129,7 +129,9 @@ struct SettingsView: View {
                 KeyRecorder(onElement: commit(_:), onCancel: cancelCapture)
             }
         }
+        .onAppear { AppHaptics.screenOpened() }
         .onChange(of: category) { _ in
+            AppHaptics.screenOpened()
             cancelCapture()
             showOllamaRecommendations = false
         }
@@ -382,6 +384,14 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
+                RemrDropdown(title: "Animation speed", selection: Binding(
+                    get: { settings.openingAnimationSpeed },
+                    set: { settings.setOpeningAnimationSpeed($0) }
+                ), options: OpeningAnimationSpeed.allCases.map {
+                    DropdownOption(value: $0, title: $0.label)
+                })
+                settingsDescription("Choose how quickly the main panel and calendar open and close. Off shows them instantly. macOS Reduce Motion takes priority.")
+
                 if settings.notchPopover {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
@@ -398,19 +408,19 @@ struct SettingsView: View {
                         ), in: SettingsStore.notchPanelWidthRange, step: 20)
                         .accessibilityLabel("Panel width")
                     }
+                }
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        settingsToggle("Trackpad haptic on open", isOn: Binding(
-                            get: { settings.notchHapticEnabled },
-                            set: { settings.setNotchHapticEnabled($0) }
-                        ))
-                        .toggleStyle(.switch)
-                        .accessibilityLabel("Trackpad haptic on open")
-                        Text("A gentle tap when the panel opens, on a compatible trackpad.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                VStack(alignment: .leading, spacing: 4) {
+                    settingsToggle("Trackpad haptic on open", isOn: Binding(
+                        get: { settings.notchHapticEnabled },
+                        set: { settings.setNotchHapticEnabled($0) }
+                    ))
+                    .toggleStyle(.switch)
+                    .accessibilityLabel("Trackpad haptic on open")
+                    Text("A gentle tap when opening any screen or popover, on a compatible trackpad.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }

@@ -13,16 +13,19 @@ type ExtensionPreferences = {}
 declare type Preferences = ExtensionPreferences
 
 declare namespace Preferences {
-  /** Preferences accessible in the `morning` command */
-  export type Morning = ExtensionPreferences & {}
   /** Preferences accessible in the `calendar` command */
   export type Calendar = ExtensionPreferences & {}
+  /** Preferences accessible in the `add-reminder` command */
+  export type AddReminder = ExtensionPreferences & {}
 }
 
 declare namespace Arguments {
-  /** Arguments passed to the `morning` command */
-  export type Morning = {}
   /** Arguments passed to the `calendar` command */
   export type Calendar = {}
+  /** Arguments passed to the `add-reminder` command */
+  export type AddReminder = {
+  /** send invoice tomorrow @work */
+  "text": string
+}
 }
 

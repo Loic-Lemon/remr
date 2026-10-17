@@ -37,7 +37,7 @@ enum KeyAction: Equatable {
     case toggleHeader            // ←/→ on a selected tab header
     case clearSelection
     case focusSearch             // "/" or ⌘F
-    case focusTitle              // Tab from list, Shift+Tab from search
+    case focusTitle              // Space or Tab from list, Shift+Tab from search
     case focusNotes              // Shift+Tab from search with a visible notes field
     case enterListMode           // Tab from search, Shift+Tab from title
     case clearSearchOrClose      // Esc with search text → clear; else close
@@ -70,9 +70,13 @@ enum KeyboardRouter {
             if context.pomodoroPresented {
                 if keyCode == 35 { return .togglePomodoro }
                 if keyCode == 36 || keyCode == 76 { return .togglePomodoroRunning }
-            } else if keyCode == 35, noFieldFocused || context.emptyTitleFieldFocused {
+            } else if keyCode == 35, noFieldFocused {
                 return .togglePomodoro
             }
+        }
+
+        if keyCode == 49, !hasModifier, noFieldFocused, !context.calendarPresented {
+            return .focusTitle
         }
 
         // Tab matrix first, hard-coded — Tab is not bindable, so custom bindings can't claim it.

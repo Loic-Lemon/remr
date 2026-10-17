@@ -62,6 +62,23 @@ extension View {
 
  
 
+/// Timing shared by the main panel and calendar presentation transitions.
+enum OpeningAnimationSpeed: String, CaseIterable, Identifiable {
+    case slow, normal, fast, off
+
+    var id: Self { self }
+    var label: String { rawValue.capitalized }
+
+    var durationScale: Double {
+        switch self {
+        case .slow: return 1.5
+        case .normal: return 1
+        case .fast: return 0.5
+        case .off: return 0
+        }
+    }
+}
+
 /// Menu bar icon style: automatic (system black/white), accent (the macOS
 /// accent colour), or custom (any user-picked colour).
 enum MenuBarIconStyle: String, CaseIterable, Identifiable {
@@ -196,6 +213,7 @@ final class SettingsStore: ObservableObject {
     /// the notch) instead of anchored under the menu bar icon. The status item
     /// itself never moves.
     @Published private(set) var notchPopover: Bool
+    @Published private(set) var openingAnimationSpeed: OpeningAnimationSpeed
     /// Width of the notch panel. Wider than the 400pt popover because the
     /// panel has no menu-bar neighbour to stay clear of.
     @Published private(set) var notchPanelWidth: CGFloat
@@ -243,6 +261,7 @@ final class SettingsStore: ObservableObject {
     private let defaults: UserDefaults
     private let bindingsKey = "remr.keyBindings"
     private let appearanceKey = "remr.appearance"
+    private let openingAnimationSpeedKey = "remr.openingAnimationSpeed"
     private let notchPopoverKey = "remr.notchPopover"
     private let notchPanelWidthKey = "remr.notchPanelWidth"
     private let notchHapticEnabledKey = "remr.notchHapticEnabled"
@@ -268,10 +287,11 @@ final class SettingsStore: ObservableObject {
     private let pomodoroEnabledKey = "remr.pomodoroEnabled"
     private let voiceInputDeviceIDKey = "remr.voiceInputDeviceID"
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = DemoEnvironment.defaults) {
         self.defaults = defaults
         bindings = Self.load(defaults: defaults, bindingsKey: bindingsKey)
         appearance = AppearanceMode(rawValue: defaults.string(forKey: appearanceKey) ?? "") ?? .system
+        openingAnimationSpeed = OpeningAnimationSpeed(rawValue: defaults.string(forKey: openingAnimationSpeedKey) ?? "") ?? .normal
         notchPopover = defaults.object(forKey: notchPopoverKey) as? Bool ?? false
         notchPanelWidth = Self.clampWidth(CGFloat(defaults.object(forKey: notchPanelWidthKey) as? Double ?? 560))
         notchHapticEnabled = defaults.object(forKey: notchHapticEnabledKey) as? Bool ?? true
@@ -302,6 +322,12 @@ final class SettingsStore: ObservableObject {
         guard self.appearance != appearance else { return }
         self.appearance = appearance
         defaults.set(appearance.rawValue, forKey: appearanceKey)
+    }
+
+    func setOpeningAnimationSpeed(_ speed: OpeningAnimationSpeed) {
+        guard openingAnimationSpeed != speed else { return }
+        openingAnimationSpeed = speed
+        defaults.set(speed.rawValue, forKey: openingAnimationSpeedKey)
     }
 
     func setNotchPopover(_ enabled: Bool) {

@@ -16,7 +16,7 @@ final class FilterStore: ObservableObject {
     private let defaults: UserDefaults
     private let key = "remr.tagFilter"
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = DemoEnvironment.defaults) {
         self.defaults = defaults
         if let saved = defaults.string(forKey: key), !saved.isEmpty {
             tag = saved

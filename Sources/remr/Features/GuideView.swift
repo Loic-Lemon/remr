@@ -52,7 +52,8 @@ struct GuideView: View {
                         GuideRow(example: "Archive icon / ←", explanation: "Open Recently Completed / Deleted")
                         GuideRow(example: "⌘F", explanation: "Search")
                         GuideRow(example: "Esc", explanation: "Step back: clear selection, then close")
-                        GuideRow(example: "Space", explanation: "Scroll")
+                        GuideRow(example: "Space", explanation: "Focus Add a task while browsing reminders")
+                        GuideRow(example: "⇧Space", explanation: "Scroll up")
                         GuideRow(example: "Gear icon", explanation: "Customize these shortcuts in Settings")
                     }
                     GuideSection(title: "Search") {

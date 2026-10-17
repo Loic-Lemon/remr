@@ -52,6 +52,36 @@ struct NotchCalendarChecks {
         check(!BindableAction.openCalendarInApp.isGlobalHotkey && BindableAction.openCalendar.isGlobalHotkey,
               "The local shortcut leaves the global calendar shortcut separate")
 
+        let suiteName = "remr.test.animation.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let settings = SettingsStore(defaults: defaults)
+        check(settings.openingAnimationSpeed == .normal, "Opening animation defaults to Normal")
+        for speed in OpeningAnimationSpeed.allCases {
+            settings.setOpeningAnimationSpeed(speed)
+            check(SettingsStore(defaults: defaults).openingAnimationSpeed == speed,
+                  "Animation speed \(speed.rawValue) persists")
+        }
+        defaults.set("invalid", forKey: "remr.openingAnimationSpeed")
+        check(SettingsStore(defaults: defaults).openingAnimationSpeed == .normal,
+              "Invalid saved animation speeds fall back to Normal")
+        let fastReveal = NotchRevealController()
+        fastReveal.animationSpeed = .fast
+        check(abs(fastReveal.duration - 0.14) < 0.001
+              && abs(fastReveal.closingDuration - 0.21) < 0.001,
+              "Fast halves opening and closing durations")
+        fastReveal.open(animated: true)
+        advance(0.17)
+        check(fastReveal.contentRevealed, "Fast reveals content after its shorter expansion")
+        fastReveal.reset()
+        fastReveal.animationSpeed = .off
+        fastReveal.open(animated: true)
+        check(fastReveal.widthRevealed && fastReveal.heightRevealed && fastReveal.contentRevealed,
+              "Off reveals the entire panel immediately")
+        fastReveal.retract()
+        check(!fastReveal.widthRevealed && !fastReveal.heightRevealed && !fastReveal.contentRevealed,
+              "Off retracts immediately")
+
         let reveal = NotchRevealController()
         reveal.open(animated: true)
         check(!reveal.contentRevealed, "Calendar content and Today glass remain hidden at animation start")

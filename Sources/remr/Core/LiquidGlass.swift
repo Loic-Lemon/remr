@@ -1,11 +1,21 @@
 import AppKit
 import SwiftUI
 
+private struct NativeControlGlassEnabledKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
 private struct NativeNotchGlassEnabledKey: EnvironmentKey {
     static let defaultValue = true
 }
 
 extension EnvironmentValues {
+    /// Native control lenses must not render ahead of the foreground reveal.
+    var nativeControlGlassEnabled: Bool {
+        get { self[NativeControlGlassEnabledKey.self] }
+        set { self[NativeControlGlassEnabledKey.self] = newValue }
+    }
+
     var nativeNotchGlassEnabled: Bool {
         get { self[NativeNotchGlassEnabledKey.self] }
         set { self[NativeNotchGlassEnabledKey.self] = newValue }
@@ -71,7 +81,7 @@ extension View {
 
     private func notchPanelSurface(headHeight: CGFloat, fade: CGFloat) -> some View {
         let shape = NotchPanelShape()
-        return NotchGlassBackdrop()
+        return PanelGlassBackdrop(shape: shape)
         // Keep the fixed-height blend out of sizing, especially while the
         // glass is still shorter than the blend during its opening frames.
         .overlay(alignment: .top) {
@@ -152,11 +162,31 @@ extension View {
     /// shadow is applied: the card grows with the content, and a shadow
     /// re-rendered against the changing silhouette reads as a shimmer at the
     /// top. Content is clipped to the silhouette so nested glass pieces never
-    /// poke past the rounded corners.
+    /// poke past the rounded corners. `frosted` adds the notch panel's real
+    /// behind-window blur and quieter lens tint for the capture popup.
     @ViewBuilder
-    func liquidGlassPopup() -> some View {
+    func liquidGlassPopup(frosted: Bool = false) -> some View {
         let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
-        if #available(macOS 26.0, *) {
+        if frosted {
+            self.liquidGlassGrouping()
+                .background {
+                    ZStack {
+                        NotchWindowFrost()
+                        PanelGlassBackdrop(shape: shape)
+                    }
+                    .clipShape(shape)
+                }
+                .overlay {
+                    shape.strokeBorder(
+                        LinearGradient(colors: [.white.opacity(0.22), .white.opacity(0.04),
+                                                .white.opacity(0.12)],
+                                       startPoint: .topLeading, endPoint: .bottomTrailing),
+                        lineWidth: 0.75
+                    )
+                    .allowsHitTesting(false)
+                }
+                .clipShape(shape)
+        } else if #available(macOS 26.0, *) {
             GlassEffectContainer {
                 self
                     .glassEffect(.regular.tint(AppPalette.controlTint), in: shape)
@@ -199,7 +229,7 @@ extension View {
     func liquidGlassField<S: Shape>(in shape: S) -> some View {
         if #available(macOS 26.0, *) {
             self
-                .glassEffect(.regular.tint(AppPalette.controlTint), in: shape)
+                .revealAwareControlGlass(tint: AppPalette.controlTint, in: shape)
                 .overlay(shape.stroke(AppPalette.controlStroke, lineWidth: 0.75))
         } else {
             self
@@ -224,7 +254,7 @@ extension View {
                 .opacity(0.42)
         } else if #available(macOS 26.0, *) {
             self
-                .glassEffect(.regular.tint(AppPalette.controlTint), in: Capsule())
+                .revealAwareControlGlass(tint: AppPalette.controlTint, in: Capsule())
                 .overlay(Capsule().stroke(AppPalette.controlStroke, lineWidth: 0.75))
         } else {
             self
@@ -242,7 +272,7 @@ extension View {
         if #available(macOS 26.0, *), refractive {
             self
                 .foregroundStyle(.primary)
-                .glassEffect(.regular.tint(AppPalette.keycapTint), in: shape)
+                .revealAwareControlGlass(tint: AppPalette.keycapTint, in: shape)
                 .overlay(shape.stroke(AppPalette.keycapStroke, lineWidth: 1))
         } else {
             // Scrolling keycaps use a flat fill: native glass is drawn in a
@@ -267,7 +297,7 @@ extension View {
                 .opacity(0.42)
         } else if #available(macOS 26.0, *) {
             self
-                .glassEffect(.regular.tint(tint.opacity(0.18)), in: Capsule())
+                .revealAwareControlGlass(tint: tint.opacity(0.18), in: Capsule())
                 .overlay(Capsule().stroke(tint.opacity(0.38), lineWidth: 1))
         } else {
             self
@@ -284,7 +314,7 @@ extension View {
         let shape = Rectangle()
         if #available(macOS 26.0, *) {
             self
-                .glassEffect(.regular.tint(AppPalette.controlTint), in: shape)
+                .revealAwareControlGlass(tint: AppPalette.controlTint, in: shape)
         } else {
             self
                 .background(shape.fill(AppPalette.surfaceFill))
@@ -330,7 +360,7 @@ extension View {
         } else if #available(macOS 26.0, *) {
             let fill = (tint ?? Color.primary).opacity(filled ? 0.55 : 0.18)
             self
-                .glassEffect(.regular.tint(fill), in: shape)
+                .revealAwareControlGlass(tint: fill, in: shape)
         } else {
             let fill = (tint ?? Color.secondary).opacity(filled ? 0.5 : 0.14)
             let stroke = (tint ?? Color.secondary).opacity(filled ? 0.55 : 0.3)
@@ -386,7 +416,7 @@ extension View {
     @ViewBuilder
     func liquidGlassToast() -> some View {
         if #available(macOS 26.0, *) {
-            self.glassEffect(.regular, in: Capsule())
+            self.revealAwareControlGlass(in: Capsule())
         } else {
             self
                 .background(Capsule().fill(AppPalette.surfaceFill))
@@ -412,8 +442,10 @@ private struct NotchWindowFrost: View {
     }
 }
 
-/// Only the lightweight lens and lighting follow the opening contour.
-private struct NotchGlassBackdrop: View {
+/// Shared lens and directional lighting for the notch and quick-add surfaces.
+/// The expensive behind-window frost is supplied separately.
+private struct PanelGlassBackdrop<Surface: Shape>: View {
+    let shape: Surface
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.nativeNotchGlassEnabled) private var nativeGlassEnabled
@@ -429,7 +461,7 @@ private struct NotchGlassBackdrop: View {
                     Color.clear.glassEffect(
                         .regular.tint(colorScheme == .dark
                                       ? .black.opacity(0.06) : .white.opacity(0.04)),
-                        in: NotchPanelShape()
+                        in: shape
                     )
                 }
                 // A small directional light gives the broad surface depth
@@ -452,9 +484,9 @@ private struct GlassInputField: ViewModifier {
     @ViewBuilder
     private func surface(for content: Content) -> some View {
         if #available(macOS 26.0, *) {
-            // Associate the lens with its foreground so AppKit text views
-            // stay above it instead of entering a separate glass sample.
-            content.glassEffect(.regular.tint(Color.primary.opacity(0.035)), in: shape)
+            // Associate native field text with its glass foreground. Moving
+            // the lens to a separate background breaks that association.
+            content.revealAwareControlGlass(tint: Color.primary.opacity(0.035), in: shape)
         } else {
             content.background(shape.fill(AppPalette.fieldFill))
         }
@@ -500,5 +532,23 @@ struct BehindWindowBlur: NSViewRepresentable {
     func updateNSView(_ view: NSVisualEffectView, context: Context) {
         view.material = material
         view.state = .active
+    }
+}
+
+@available(macOS 26.0, *)
+private struct RevealAwareControlGlass<S: Shape>: ViewModifier {
+    let tint: Color?
+    let shape: S
+    @Environment(\.nativeControlGlassEnabled) private var enabled
+
+    func body(content: Content) -> some View {
+        content.glassEffect(enabled ? .regular.tint(tint) : .identity, in: shape)
+    }
+}
+
+extension View {
+    @available(macOS 26.0, *)
+    fileprivate func revealAwareControlGlass<S: Shape>(tint: Color? = nil, in shape: S) -> some View {
+        modifier(RevealAwareControlGlass(tint: tint, shape: shape))
     }
 }

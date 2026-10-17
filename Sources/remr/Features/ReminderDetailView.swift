@@ -84,7 +84,7 @@ struct ReminderDetailView: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Reminder details")
         .onExitCommand(perform: onClose)
-        .remrPopover(isPresented: $showSnoozePicker, arrowEdge: .top) {
+        .remrDropdown(isPresented: $showSnoozePicker, arrowEdge: .top) {
             SnoozeDatePickerView(initialDate: dueDate ?? defaultSnoozeDate(),
                                  initialHasTime: !isAllDay,
                                  onCancel: { showSnoozePicker = false },

@@ -17,6 +17,7 @@ extension Notification.Name {
     /// the main popover to show a reminder's detail page.
     static let remrShowReminderDetail = Notification.Name("remr.showReminderDetail")
     static let remrShowBulkPreview = Notification.Name("remr.showBulkPreview")
+    static let remrShowMainPage = Notification.Name("remr.showMainPage")
     static let remrPopoverClosing = Notification.Name("remr.popoverClosing")
 }
 
@@ -446,7 +447,13 @@ struct MainView: View {
                                                 onBulkPreview: {
                                                     self.undoEntry = nil
                                                     self.bulkInput = $0
-                                                })
+                                                },
+                                                onCreated: {
+                                                    DispatchQueue.main.async {
+                                                        popoverWindow?.makeFirstResponder(nil)
+                                                    }
+                                                },
+                                                autofocus: false)
                                 .padding(.horizontal, 12)
                                 searchRow
                             }
@@ -472,16 +479,18 @@ struct MainView: View {
                     // Keep the scroll view at its normal layout size; only
                     // its visible area contracts to make room for the timer.
                     .frame(height: popoverBaseHeight - syncFooterHeight)
+                    // Keep the foreground isolated from the native backdrop
+                    // and control lenses before applying the timer effect.
                     .compositingGroup()
                     .blur(radius: pomodoroPresented ? 5 : 0)
-                    // Apply the blur once rather than filtering the reminder
-                    // tree at a different radius on every animation frame.
+                    // The intentional timer backdrop blur stays fixed while
+                    // the Pomodoro section's layout animates.
                     .animation(nil, value: pomodoroPresented)
                     .allowsHitTesting(!pomodoroPresented)
                     .accessibilityHidden(pomodoroPresented)
                     .frame(height: popoverBaseHeight - syncFooterHeight - (pomodoroPresented ? pomodoroPanelHeight : 0),
                            alignment: .top)
-                    .clipped()
+                    .clipShape(ReminderContentClip())
                     // The sync status owns a real row above the timer. It must
                     // not live in the clipped reminder tree, where native glass
                     // effects can escape the clip and cover the timer controls.
@@ -498,6 +507,18 @@ struct MainView: View {
         }
     }
 
+    /// Navigation changes within the already-visible main window.
+    private var presentedScreen: String {
+        if showSettings { return "settings" }
+        if let viewingReminder { return "detail:\(viewingReminder.calendarItemIdentifier)" }
+        if let editingReminder { return "edit:\(editingReminder.calendarItemIdentifier)" }
+        if showVoiceLog { return "voiceLog" }
+        if showBulkInput { return "bulkInput" }
+        if bulkInput != nil { return "bulkPreview" }
+        if pomodoroPresented { return "pomodoro" }
+        return "reminders"
+    }
+
     var body: some View {
         Group {
             // Native glass can escape a SwiftUI opacity layer. Unmount the
@@ -505,11 +526,18 @@ struct MainView: View {
             if showSettings {
                 SettingsView(onClose: {
                     showSettings = false
-                    titleFocusRequest += 1
+                    popoverWindow?.makeFirstResponder(nil)
                 })
             } else {
                 mainContent
             }
+        }
+        .onChange(of: presentedScreen) { _ in
+            // Both presentation styles retain a warm MainView. Only the
+            // visible one should produce feedback for navigation.
+            guard popoverWindow?.isVisible == true,
+                  (surface == .floatingPanel) == settings.notchPopover else { return }
+            AppHaptics.screenOpened()
         }
         .onChange(of: showSettings) { presented in
             if presented {
@@ -520,10 +548,40 @@ struct MainView: View {
                 firedKeys = nil
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .remrShowMainPage)) { _ in
+            // The retained hosting views must start each normal presentation
+            // on reminders, rather than restoring the last Settings/detail page.
+            showSettings = false
+            viewingReminder = nil
+            editingReminder = nil
+            showVoiceLog = false
+            showBulkInput = false
+            bulkInput = nil
+            showGuide = false
+            showRecovery = false
+            showTagFilter = false
+            showTagManager = false
+            showListPicker = false
+            snoozingReminder = nil
+            snoozeShowingPicker = false
+            confirmDeleteForever = false
+            pendingDeleteForever = nil
+            selection = nil
+            searchFocused = false
+            heldKeys.removeAll()
+            firedKeys = nil
+            collapsePomodoro(animated: false)
+        }
         .onReceive(NotificationCenter.default.publisher(for: .remrPopoverClosing)) { _ in
             collapsePomodoro(animated: false)
             heldKeys.removeAll()
             firedKeys = nil
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
+            guard let window = note.object as? NSWindow, window === popoverWindow,
+                  presentedScreen == "reminders" else { return }
+            searchFocused = false
+            window.makeFirstResponder(nil)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { note in
             guard let window = note.object as? NSWindow, window === popoverWindow else { return }
@@ -543,6 +601,7 @@ struct MainView: View {
             PomodoroKeyProbe.log("onAppear monitor installed surface=\(surface) popoverWindow=\(popoverWindow.map { "#\($0.windowNumber) \(type(of: $0))" } ?? "nil") keyWindow=\(NSApp.keyWindow.map { "#\($0.windowNumber)" } ?? "nil")")
             // REMR-POMO-PROBE-END
             monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { event in
+                if FastDropdownPresenter.hasOpenMenu(in: event.window) { return event }
                 let watched = PomodoroKeyProbe.loggingEnabled && (event.keyCode == 35 || event.keyCode == 36 || event.keyCode == 76)
                 if settings.isCapturing { if watched { PomodoroKeyProbe.log("monitor k=\(event.keyCode) bail capturing") }; return event }
                 if showSettings || viewingReminder != nil || editingReminder != nil || bulkInput != nil || snoozingReminder != nil || showVoiceLog || showBulkInput {
@@ -660,7 +719,7 @@ struct MainView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .remrShowReminderDetail)) { note in
             // Calendar double-click handoff: show the detail page for the
-            // reminder id (posted by AppDelegate before the popover opens).
+            // reminder id (posted after the popover opens on its main page).
             guard let id = note.userInfo?["id"] as? String,
                   let reminder = (store.allReminders + store.completedReminders)
                     .first(where: { $0.calendarItemIdentifier == id }) else { return }
@@ -832,7 +891,7 @@ struct MainView: View {
                 .accessibilityLabel("Select lists")
                 .help("Select lists")
                 .background {
-                    FastPopoverPresenter(
+                    FastDropdownPresenter(
                         isPresented: showListPicker,
                         content: AnyView(
                             ListPickerView(counts: listCounts,
@@ -936,8 +995,8 @@ struct MainView: View {
     }
 
     /// The current week's calendar pinned under the list (opt-in setting):
-    /// today filled, red/gray count badges per day. Plain, sitting on the
-    /// popover glass above the sync footer's band.
+    /// red/gray count badges per day on a quiet inset surface above the
+    /// sync footer. The surface separates it from the scrolling list.
     private var bottomCalendarContent: some View {
         MiniWeekView(calendar: .current,
                      date: Date(),
@@ -945,8 +1004,14 @@ struct MainView: View {
                      activeCounts: dayCounts.active,
                      completedCounts: dayCounts.completed,
                      inset: false)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 8)
+            .background {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.primary.opacity(0.04))
+            }
+            .padding(.horizontal, 8)
+            .padding(.top, 6)
+            .padding(.bottom, 2)
     }
 
     /// Incomplete (red) and completed (gray) reminder counts per startOfDay,
@@ -1161,10 +1226,9 @@ struct MainView: View {
                 }
             }
 
-            // The calendar's upper border, then the strip, then the footer's
-            // border.
+            // The inset calendar surface carries the upper separation;
+            // keep a quiet divider only above the sync footer.
             if settings.showBottomCalendar {
-                Divider().opacity(0.45)
                 bottomCalendarContent
                     .zIndex(1)
                 Divider().opacity(0.45)
@@ -1172,7 +1236,7 @@ struct MainView: View {
         }
         .frame(maxWidth: .infinity)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .remrPopover(isPresented: Binding(get: { snoozingReminder != nil },
+        .remrDropdown(isPresented: Binding(get: { snoozingReminder != nil },
                                       set: { presented in
                                           if !presented { closeSnooze() }
                                       }), arrowEdge: .bottom) {
@@ -1477,6 +1541,7 @@ struct MainView: View {
         case .focusSearch:
             searchFocused = true
         case .focusTitle:
+            searchFocused = false
             titleFocusRequest += 1
         case .focusNotes:
             notesFocusRequest += 1
@@ -1600,7 +1665,10 @@ struct MainView: View {
 
     /// Escape chain for the text fields: clear the selection first, else close.
     private func handleEscape() {
-        if selection != nil {
+        if popoverWindow?.firstResponder is NSTextView || searchFocused {
+            searchFocused = false
+            popoverWindow?.makeFirstResponder(nil)
+        } else if selection != nil {
             selection = nil
         } else {
             closePopover()
@@ -1648,5 +1716,13 @@ private final class ProbeView: NSView {
         super.viewDidMoveToWindow()
         PomodoroKeyProbe.log("WindowProbe viewDidMoveToWindow window=\(window.map { "#\($0.windowNumber) visible=\($0.isVisible) key=\($0.isKeyWindow) \(type(of: $0))" } ?? "nil")")
         if let window { onWindow(window) }   // nil moves handled by onDisappear
+    }
+}
+
+/// Keep the footer/Pomodoro boundary clipped while allowing the composer's
+/// tiny centered focus decoration to extend above the first row.
+private struct ReminderContentClip: Shape {
+    func path(in rect: CGRect) -> Path {
+        Path(CGRect(x: rect.minX, y: rect.minY - 3, width: rect.width, height: rect.height + 3))
     }
 }

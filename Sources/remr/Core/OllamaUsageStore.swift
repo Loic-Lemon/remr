@@ -16,7 +16,7 @@ final class OllamaUsageStore: ObservableObject {
 
     private let defaults: UserDefaults
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = DemoEnvironment.defaults) {
         self.defaults = defaults
         requestCount = defaults.integer(forKey: "remr.ollama.requests")
         activeSeconds = defaults.double(forKey: "remr.ollama.activeSeconds")

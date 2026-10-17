@@ -27,12 +27,16 @@ final class NotchRevealController: ObservableObject {
 
     nonisolated static let openingDuration: TimeInterval = 0.28
     nonisolated static let closingDuration: TimeInterval = 0.42
-    let duration: TimeInterval
-    let contentFadeDuration: TimeInterval
+    var animationSpeed: OpeningAnimationSpeed = .normal
+    private let baseDuration: TimeInterval
+    private let baseContentFadeDuration: TimeInterval
+    var duration: TimeInterval { baseDuration * animationSpeed.durationScale }
+    var contentFadeDuration: TimeInterval { baseContentFadeDuration * animationSpeed.durationScale }
+    var closingDuration: TimeInterval { Self.closingDuration * animationSpeed.durationScale }
 
     init(duration: TimeInterval = openingDuration, contentFadeDuration: TimeInterval = 0.11) {
-        self.duration = duration
-        self.contentFadeDuration = contentFadeDuration
+        self.baseDuration = duration
+        self.baseContentFadeDuration = contentFadeDuration
     }
 
     /// Width the silhouette starts from while collapsed: the morph override
@@ -50,7 +54,7 @@ final class NotchRevealController: ObservableObject {
     func open(animated: Bool) {
         revealGeneration &+= 1
         let generation = revealGeneration
-        guard animated else {
+        guard animated, animationSpeed != .off else {
             widthRevealed = true
             heightRevealed = true
             contentRevealed = true
@@ -88,14 +92,19 @@ final class NotchRevealController: ObservableObject {
         // Withdraw into the notch — or into the silhouette this retract lands
         // in — never the one this presentation grew from.
         startSize = size
-        withAnimation(.easeOut(duration: 0.10)) {
+        guard animationSpeed != .off else {
+            reset()
+            return
+        }
+        let scale = animationSpeed.durationScale
+        withAnimation(.easeOut(duration: 0.10 * scale)) {
             contentRevealed = false
         }
         guard size != nil else {
-            withAnimation(.spring(response: 0.30, dampingFraction: 1).delay(0.035)) {
+            withAnimation(.spring(response: 0.30 * scale, dampingFraction: 1).delay(0.035 * scale)) {
                 heightRevealed = false
             }
-            withAnimation(.spring(response: 0.25, dampingFraction: 1).delay(0.10)) {
+            withAnimation(.spring(response: 0.25 * scale, dampingFraction: 1).delay(0.10 * scale)) {
                 widthRevealed = false
             }
             return
@@ -197,6 +206,7 @@ struct NotchReveal<Surface: View, Backdrop: View>: ViewModifier {
                     .environment(\.nativeNotchGlassEnabled, !defersGlassUntilOpen || controller.contentRevealed)
                     .frame(width: width, height: height)
                 content
+                    .environment(\.nativeControlGlassEnabled, controller.contentRevealed)
                     .mask(alignment: .top) {
                         NotchPanelShape().frame(width: width, height: height)
                     }

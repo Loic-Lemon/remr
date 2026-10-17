@@ -24,12 +24,6 @@ private final class FirstMouseHostingView: NSHostingView<AnyView> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
-/// Fixed height for the quick-add panel (clamped to the visible screen). The
-/// description unfolds INSIDE this glass surface while typing — the window
-/// never resizes, keeping the reveal motion identical to the in-app popover
-/// and eliminating the resize-driven "bounce".
-private let quickAddFixedHeight: CGFloat = 360
-
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     static weak var instance: AppDelegate?
@@ -53,6 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var serviceHosting: NSHostingController<AnyView>?
     private var quickAddWindow: NSPanel?
     private var quickAddHosting: NSHostingController<AnyView>?
+    private var quickAddSessionID: UUID?
     private var calendarWindow: NSPanel?
     private var calendarHosting: FirstMouseHostingView?
     private let calendarReveal = NotchRevealController(duration: 0.22, contentFadeDuration: 0.08)
@@ -134,7 +129,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async {
                 guard let app = AppDelegate.instance else { return }
                 switch hotKeyID.id {
-                case 1: app.togglePopover()
+                case 1:
+                    // Use the native button click so the shortcut also flashes
+                    // the menu bar selection highlight before toggling remr.
+                    app.statusItem.button?.performClick(nil)
                 case 2: app.showQuickAdd()
                 case 3: app.showCalendar()
                 case 4 where SettingsStore.shared.ollamaEnabled: app.toggleVoice(mode: .verify)
@@ -310,7 +308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         AppDelegate.instance = self
 
-        NSApp.servicesProvider = ServiceHandler.shared
+        if !DemoEnvironment.isEnabled { NSApp.servicesProvider = ServiceHandler.shared }
         store.start()
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -324,7 +322,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                              count: 0)
             button.action = #selector(statusItemClicked(_:))
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-            button.toolTip = "remr"
+            button.toolTip = DemoEnvironment.isEnabled ? "remr Demo — fictional reminders" : "remr"
         }
         statusItem = item
 
@@ -408,6 +406,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Calendar keyboard controls share the main view's routing and focus
         // guards. Track full chords so custom local bindings work in both views.
         keyDownLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { [weak self] event in
+            if FastDropdownPresenter.hasOpenMenu(in: event.window) { return event }
             guard let self else { return event }
             guard let window = self.calendarWindow,
                   window.isVisible,
@@ -586,7 +585,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.setAccessibilityLabel(button.toolTip)
         } else {
             button.title = ""
-            button.toolTip = "remr"
+            button.toolTip = DemoEnvironment.isEnabled ? "remr Demo — fictional reminders" : "remr"
             button.setAccessibilityLabel("remr")
             StatusIcon.apply(to: button,
                              symbol: settings.menuBarIconSymbol,
@@ -630,7 +629,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func togglePopover() {
         guard let button = statusItem.button else { return }
-        if isMainSurfaceShown {
+        // A notch panel can remain visible while another app is active.
+        // Invoking remr there should bring its main page back to the front.
+        if isMainSurfaceShown && NSApp.isActive {
             closePopover()
         } else {
             showPopover(relativeTo: button)
@@ -638,6 +639,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showPopover(relativeTo button: NSStatusBarButton) {
+        NotificationCenter.default.post(name: .remrShowMainPage, object: nil)
         closeCalendar(animated: false)
         reviewNudgeController?.didReview()
         if SettingsStore.shared.notchPopover {
@@ -680,6 +682,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     // REMR-MORPH-PROBE-END
 
+    private var presentationAnimationSpeed: OpeningAnimationSpeed {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            ? .off : SettingsStore.shared.openingAnimationSpeed
+    }
+
     private func showButtonAnchoredPopover(relativeTo button: NSStatusBarButton) {
         store.refresh()
         // Open instantly, then fade in. The native popover spring
@@ -692,6 +699,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.contentSize = NSSize(width: 400, height: collapsedHeight)
         popover.animates = false
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        if popover.isShown { AppHaptics.screenOpened() }
         // macOS 26's NSPopover supplies the native Liquid Glass surface.
         // Older systems need the transparent host for the material fallback.
         if #unavailable(macOS 26.0) {
@@ -704,9 +712,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let window = popover.contentViewController?.view.window {
             // Set the start alpha before the runloop paints so the first
             // composited frame is already transparent — no flash.
-            window.alphaValue = 0
+            window.alphaValue = presentationAnimationSpeed == .off ? 1 : 0
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.1
+                context.duration = 0.1 * presentationAnimationSpeed.durationScale
                 context.allowsImplicitAnimation = true
                 window.animator().alphaValue = 1
             }
@@ -733,6 +741,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Start collapsed so the window's first visible frame is the notch
         // strip, not the full panel.
         notchReveal.reset()
+        notchReveal.animationSpeed = presentationAnimationSpeed
+        if presentationAnimationSpeed == .off { notchReveal.open(animated: false) }
 
         guard let window = notchWindow else { return }
         let collapsedHeight: CGFloat = MainPopoverLayout.height(pomodoroEnabled: SettingsStore.shared.pomodoroEnabled)
@@ -742,20 +752,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         positionNotchWindow(window)
 
         applyAppearance(SettingsStore.shared.appearance)
+        // Commit the collapsed foreground/glass gate while the retained panel
+        // is hidden, before the window server can display its previous frame.
+        notchHosting?.layoutSubtreeIfNeeded()
+        notchHosting?.displayIfNeeded()
         // Activate before ordering front so an inactive app can still make the
         // panel key and receive keyboard input immediately.
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+        AppHaptics.screenOpened()
         // REMR-POMO-PROBE-BEGIN
         PomodoroKeyProbe.log("showNotchPanel ordered isVisible=\(window.isVisible) isKey=\(window.isKeyWindow) appActive=\(NSApp.isActive)")
         // REMR-POMO-PROBE-END
 
-        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+        if presentationAnimationSpeed == .off {
             notchReveal.open(animated: false)
             store.refresh()
         } else {
-            provideNotchHaptic()
-            // The glass and its rim finish opening together in 280 ms.
+            // The glass and its rim finish opening together at the chosen speed.
             // Keep reminders hidden until that movement is complete.
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.notchWindow?.isVisible == true,
@@ -763,20 +777,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.notchReveal.open(animated: true)
                 // Fetching publishes whole reminder arrays and rebuilds the
                 // list. Keep that burst out of the glass animation's frames.
-                DispatchQueue.main.asyncAfter(deadline: .now() + NotchRevealController.openingDuration) { [weak self] in
+                DispatchQueue.main.asyncAfter(deadline: .now() + self.notchReveal.duration) { [weak self] in
                     guard let self, self.notchWindow?.isVisible == true,
                           self.notchCloseGeneration == generation else { return }
                     self.store.refresh()
                 }
             }
         }
-    }
-
-    /// A gentle trackpad tap as the panel opens, like the notch islands use.
-    /// Silent on hardware without a Force Touch trackpad.
-    private func provideNotchHaptic() {
-        guard SettingsStore.shared.notchHapticEnabled else { return }
-        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .default)
     }
 
     /// The display the notch panel lives on: the primary (menu bar) display.
@@ -788,7 +795,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Height of the menu bar / notch area at the top of the primary display.
     /// The panel extends up through this so its surface reaches the screen
-    /// edge, while the content stays below it.
+    /// edge, while the content stays below it with room for the focus lift.
     private var notchTopInset: CGFloat {
         guard let screen = notchScreen() else { return 0 }
         let menuBar = max(0, screen.frame.maxY - screen.visibleFrame.maxY)
@@ -798,7 +805,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // region either side of the notch, so their top edge gives the notch
         // height directly.
         let notch = screen.auxiliaryTopLeftArea.map { max(0, screen.frame.maxY - $0.minY) } ?? 0
-        return max(menuBar, notch, screen.safeAreaInsets.top)
+        return max(menuBar, notch, screen.safeAreaInsets.top) + 10
     }
 
     private var notchHousingWidth: CGFloat {
@@ -893,12 +900,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// page (the calendar double-click handoff).
     func showReminderDetail(_ reminder: EKReminder) {
         closeCalendar(animated: false)
-        NotificationCenter.default.post(name: .remrShowReminderDetail,
-                                        object: nil,
-                                        userInfo: ["id": reminder.calendarItemIdentifier])
         if !isMainSurfaceShown, let button = statusItem.button {
             showPopover(relativeTo: button)
         }
+        NotificationCenter.default.post(name: .remrShowReminderDetail,
+                                        object: nil,
+                                        userInfo: ["id": reminder.calendarItemIdentifier])
     }
 
     /// Fade the popover window out, then close it. Used everywhere the
@@ -913,7 +920,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard popover.isShown, let window = popover.contentViewController?.view.window else { return }
         NotificationCenter.default.post(name: .remrPopoverClosing, object: nil)
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.12
+            context.duration = 0.12 * presentationAnimationSpeed.durationScale
             context.allowsImplicitAnimation = true
             window.animator().alphaValue = 0
         } completionHandler: {
@@ -937,15 +944,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         notchCloseGeneration &+= 1
         let generation = notchCloseGeneration
-        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        if reduceMotion || !animated {
+        notchReveal.animationSpeed = presentationAnimationSpeed
+        if presentationAnimationSpeed == .off || !animated {
             window.orderOut(nil)
             notchReveal.reset()
             NotificationCenter.default.post(name: .remrPopoverClosing, object: nil)
             return
         }
         notchReveal.retract()
-        DispatchQueue.main.asyncAfter(deadline: .now() + NotchRevealController.closingDuration) { [weak self, weak window] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + notchReveal.closingDuration) { [weak self, weak window] in
             guard let self, let window,
                   self.notchCloseGeneration == generation else { return }
             window.orderOut(nil)
@@ -971,7 +978,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notchCloseGeneration &+= 1
         let generation = notchCloseGeneration
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.08
+            context.duration = 0.08 * presentationAnimationSpeed.durationScale
             context.allowsImplicitAnimation = true
             window.animator().alphaValue = 0
         } completionHandler: { [weak self, weak window] in
@@ -987,22 +994,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Opens a fresh quick-add session in a reusable centered floating panel.
-    func showQuickAdd() {
+    func showQuickAdd(initialText: String = "") {
         if isMainSurfaceShown { closePopover() }
 
         // Invalidate any pending close fade from a previous presentation.
         quickAddCloseGeneration &+= 1
         let sessionID = UUID()
+        quickAddSessionID = sessionID
 
         let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
             ?? NSScreen.main
             ?? NSScreen.screens.first
-        let fixedHeight = min(quickAddFixedHeight, (screen?.visibleFrame.height ?? 800) - 24)
 
         let rootView = AnyView(
             QuickAddView(sessionID: sessionID,
+                         initialText: initialText,
                          onCancel: { [weak self] in self?.closeQuickAdd() },
-                         onCreated: { [weak self] in self?.closeQuickAdd() })
+                         onCreated: { [weak self] in self?.closeQuickAdd() },
+                         onHeightChange: { [weak self] height in
+                             // SwiftUI reports layout during a view update;
+                             // resize afterwards and discard stale sessions.
+                             DispatchQueue.main.async {
+                                 guard let self, self.quickAddSessionID == sessionID else { return }
+                                 self.resizeQuickAdd(to: height)
+                             }
+                         })
                 .environmentObject(store)
                 .environmentObject(SettingsStore.shared)
                 .remrAppearance(using: SettingsStore.shared)
@@ -1014,6 +1030,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window = existingWindow
         } else {
             let hosting = NSHostingController(rootView: rootView)
+            hosting.sizingOptions = []
             let newWindow = FloatingKeyPanel(contentViewController: hosting)
             newWindow.styleMask = [.borderless]
             newWindow.isOpaque = false
@@ -1034,12 +1051,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window = newWindow
         }
 
-        // The panel is a fixed-size glass surface: the description unfolds
-        // INSIDE it (pure SwiftUI, like the in-app popover), so the window
-        // never moves or resizes while typing — that was the source of the
-        // reveal "bounce". Sizing applies to reused windows too, so a reopen
-        // always presents the same fixed panel.
-        window.setContentSize(NSSize(width: 500, height: fixedHeight))
+        // Fit the initial content before centering; subsequent measurements
+        // grow the panel downward while keeping the title field stationary.
+        quickAddHosting?.view.layoutSubtreeIfNeeded()
+        let height = quickAddHosting?.view.fittingSize.height ?? 60
+        window.setContentSize(NSSize(width: QuickAddView.width, height: height))
 
         // Restore the reusable panel before ordering it front. This keeps a
         // rapid reopen fully visible and invalidates any pending fade.
@@ -1061,9 +1077,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // editor's focus request sticks.
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+        AppHaptics.screenOpened()
+    }
+
+    private func resizeQuickAdd(to height: CGFloat) {
+        guard let window = quickAddWindow, height.isFinite, height > 0 else { return }
+        let height = ceil(height)
+        guard abs(window.frame.height - height) > 0.5 else { return }
+        var frame = window.frame
+        frame.origin.y = frame.maxY - height
+        frame.size = NSSize(width: QuickAddView.width, height: height)
+        // The composer's SwiftUI animation already drives measured heights.
+        // A second AppKit animation would lag behind and move the text.
+        window.setFrame(frame, display: true)
     }
 
     private func closeQuickAdd() {
+        quickAddSessionID = nil
         guard let window = quickAddWindow else { return }
         guard window.isVisible else {
             window.alphaValue = 1
@@ -1142,6 +1172,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         applyAppearance(SettingsStore.shared.appearance)
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+        AppHaptics.screenOpened()
     }
 
     private func cancelVoice() {
@@ -1290,16 +1321,82 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         applyAppearance(SettingsStore.shared.appearance)
         NSSound(named: NSSound.Name("Tink"))?.play()
         window.orderFrontRegardless()
+        AppHaptics.screenOpened()
     }
 
     private func closePomodoroCompletion() {
         pomodoroCompletionWindow?.orderOut(nil)
     }
 
-    /// Opens Remr's calendar from a URL, including when called by Raycast.
+    /// Raycast hands creation to remr so parsing and EventKit stay in one app.
     func application(_ application: NSApplication, open urls: [URL]) {
-        guard urls.contains(where: { $0.scheme == "remr" && $0.host == "calendar" }) else { return }
-        showCalendar()
+        for url in urls where url.scheme == "remr" {
+            guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { continue }
+            let text = components.queryItems?.first(where: { $0.name == "text" })?.value ?? ""
+            switch url.host {
+            case "calendar": showCalendar()
+            case "compose": showQuickAdd(initialText: text)
+            case "add":
+                let requestID = components.queryItems?.first(where: { $0.name == "requestId" })?.value
+                    .flatMap(UUID.init(uuidString:))
+                Task { @MainActor in
+                    await self.createFromRaycast(text, requestID: requestID)
+                }
+            default: break
+            }
+        }
+    }
+
+    private func createFromRaycast(_ text: String, requestID: UUID?) async {
+        do {
+            await store.requestAccess()
+            guard store.accessState == .authorized else {
+                throw NSError(domain: "remr", code: 1, userInfo: [NSLocalizedDescriptionKey: "Allow Reminders access in remr, then try again."])
+            }
+            let parsed = NaturalLanguageParser.parse(text.trimmingCharacters(in: .whitespacesAndNewlines),
+                                                     now: Date(), calendar: .current,
+                                                     listNames: store.reminderCalendars().map(\.title))
+            guard !parsed.isInvalid else {
+                throw NSError(domain: "remr", code: 2, userInfo: [NSLocalizedDescriptionKey: "Enter a reminder title before saving."])
+            }
+            for diagnostic in parsed.diagnostics {
+                if case .unmatchedList(let token) = diagnostic {
+                    throw NSError(domain: "remr", code: 3, userInfo: [NSLocalizedDescriptionKey: "Couldn't find list @\(token). Review the reminder in remr."])
+                }
+            }
+            let calendar = parsed.listToken.flatMap { store.resolveList(token: $0).calendar }
+            if let token = parsed.listToken, calendar == nil {
+                throw NSError(domain: "remr", code: 3, userInfo: [NSLocalizedDescriptionKey: "Couldn't find list @\(token). Review the reminder in remr."])
+            }
+            var draft = ReminderDraft.fromParsed(parsed, notes: "", calendar: calendar)
+            if case .unresolved(let phrase) = draft.location {
+                if let located = await LocationGeocoder.shared.geocode(phrase) {
+                    draft.location = .resolved(DeletedLocation(title: located.title,
+                        latitude: located.latitude, longitude: located.longitude, radius: 100))
+                } else {
+                    throw NSError(domain: "remr", code: 4, userInfo: [NSLocalizedDescriptionKey: "Couldn't find that location. Review the reminder in remr."])
+                }
+            }
+            try await store.create(from: draft)
+            writeRaycastResult(requestID, success: true, message: parsed.title)
+        } catch {
+            writeRaycastResult(requestID, success: false, message: error.localizedDescription)
+            if requestID == nil { showQuickAdd(initialText: text) }
+        }
+    }
+
+    /// Only UUID filenames in a fixed cache directory are accepted, never caller paths.
+    private func writeRaycastResult(_ requestID: UUID?, success: Bool, message: String) {
+        guard let requestID else { return }
+        do {
+            let directory = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Caches/remr/raycast-results", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let data = try JSONSerialization.data(withJSONObject: ["success": success, "message": message])
+            try data.write(to: directory.appendingPathComponent(requestID.uuidString.lowercased() + ".json"), options: .atomic)
+        } catch {
+            NSLog("remr: couldn't write Raycast confirmation: %@", error.localizedDescription)
+        }
     }
 
     /// Prepare the fixed calendar tree and its day cells while the window is
@@ -1383,7 +1480,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// shape changing form. Layout stays fixed throughout the motion.
     func showCalendar() {
         calendarHeldKeys.removeAll()
-        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let reduceMotion = presentationAnimationSpeed == .off
         // The panel's silhouette to grow from, captured before the fade so a
         // mid-animation size change can't move the calendar's start.
         let morphSize: CGSize? = notchWindow?.isVisible == true && !reduceMotion
@@ -1403,6 +1500,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         calendarCloseGeneration &+= 1
         let generation = calendarCloseGeneration
         calendarReveal.reset()
+        calendarReveal.animationSpeed = presentationAnimationSpeed
+        if reduceMotion { calendarReveal.open(animated: false) }
         calendarReveal.startSize = morphSize
 
         prepareCalendarContent()
@@ -1413,12 +1512,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         applyAppearance(SettingsStore.shared.appearance)
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+        AppHaptics.screenOpened()
 
         if reduceMotion {
             calendarReveal.open(animated: false)
             store.refresh()
         } else {
-            provideNotchHaptic()
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.calendarWindow?.isVisible == true,
                       self.calendarCloseGeneration == generation else { return }
@@ -1438,13 +1537,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         calendarCloseGeneration &+= 1
         let generation = calendarCloseGeneration
         window.ignoresMouseEvents = true
-        if !animated || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+        calendarReveal.animationSpeed = presentationAnimationSpeed
+        if !animated || presentationAnimationSpeed == .off {
             window.orderOut(nil)
             calendarReveal.reset()
             return
         }
         calendarReveal.retract()
-        DispatchQueue.main.asyncAfter(deadline: .now() + NotchRevealController.closingDuration) { [weak self, weak window] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + calendarReveal.closingDuration) { [weak self, weak window] in
             guard let self, let window,
                   self.calendarCloseGeneration == generation else { return }
             window.orderOut(nil)
@@ -1460,7 +1560,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// land in (anchored popover, Reduced Motion, no panel window).
     func returnToMainFromCalendar() {
         guard SettingsStore.shared.notchPopover,
-              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+              presentationAnimationSpeed != .off,
               let calendar = calendarWindow, calendar.isVisible else {
             showMainReminders()
             return
@@ -1501,6 +1601,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         calendarCloseGeneration &+= 1
         let calendarGeneration = calendarCloseGeneration
         calendar.ignoresMouseEvents = true
+        calendarReveal.animationSpeed = presentationAnimationSpeed
         calendarReveal.retract(into: panelSize)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + calendarReveal.duration) { [weak self, weak panel, weak calendar] in
@@ -1512,7 +1613,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.08
+                context.duration = 0.08 * self.presentationAnimationSpeed.durationScale
                 context.allowsImplicitAnimation = true
                 panel.animator().alphaValue = 1
             } completionHandler: { [weak self, weak panel, weak calendar] in
@@ -1574,6 +1675,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let hosting = serviceHosting {
             hosting.rootView = rootView
             serviceWindow?.makeKeyAndOrderFront(nil)
+            AppHaptics.screenOpened()
             applyAppearance(SettingsStore.shared.appearance)
 
             NSApp.activate(ignoringOtherApps: true)
@@ -1586,6 +1688,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.setContentSize(NSSize(width: 460, height: 600))
         window.isReleasedWhenClosed = false
         window.makeKeyAndOrderFront(nil)
+        AppHaptics.screenOpened()
         serviceWindow = window
         serviceHosting = hosting
         applyAppearance(SettingsStore.shared.appearance)

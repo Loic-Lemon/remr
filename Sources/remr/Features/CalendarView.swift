@@ -252,6 +252,7 @@ struct CalendarView: View {
                                      initialHasTime: hasTime(of: reminder),
                                      onCancel: { snoozeShowingPicker = false },
                                      onSave: saveCustomSnooze)
+                    .onAppear { AppHaptics.screenOpened() }
             }
         }
     }

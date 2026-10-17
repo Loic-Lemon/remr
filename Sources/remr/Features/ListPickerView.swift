@@ -7,6 +7,7 @@ struct ListPickerView: View {
     let onClose: () -> Void
     @EnvironmentObject private var settings: SettingsStore
     @State private var search = ""
+    @FocusState private var searchFocused: Bool
 
     private var matchingLists: [(EKCalendar, Int)] {
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -19,59 +20,17 @@ struct ListPickerView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Lists")
-                        .font(.system(size: 13, weight: .semibold))
-                    Text("\(visibleCount) of \(counts.count) shown")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button("Show all") {
-                    for (calendar, _) in counts {
-                        settings.setListHidden(calendar.calendarIdentifier, false)
-                    }
-                }
-                .font(.caption.weight(.medium))
-                .buttonStyle(.plain)
-                .foregroundStyle(Color.accentColor)
-                .disabled(visibleCount == counts.count)
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 24, height: 24)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Close lists")
-            }
-            .padding(12)
-
-            HStack(spacing: 7) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                TextField("Search lists", text: $search)
-                    .textFieldStyle(.plain)
-                if !search.isEmpty {
-                    Button { search = "" } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Clear list search")
-                }
-            }
-            .font(.system(size: 12))
-            .padding(.horizontal, 10)
-            .frame(height: 30)
-            .liquidGlassField(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .padding(.horizontal, 10)
-            .padding(.bottom, 8)
+            DropdownHeader(title: "Lists", subtitle: "\(visibleCount) of \(counts.count) shown",
+                           actionTitle: "Show all", actionDisabled: visibleCount == counts.count,
+                           onAction: {
+                               for (calendar, _) in counts {
+                                   settings.setListHidden(calendar.calendarIdentifier, false)
+                               }
+                           }, onClose: onClose)
+            DropdownSearchField(placeholder: "Search lists", text: $search, isFocused: $searchFocused)
 
             ScrollView {
-                LazyVStack(spacing: 2) {
+                LazyVStack(spacing: DropdownMetrics.rowSpacing) {
                     if matchingLists.isEmpty {
                         Text(counts.isEmpty ? "No reminder lists found" : "No matching lists")
                             .font(.caption)
@@ -83,10 +42,13 @@ struct ListPickerView: View {
                         }
                     }
                 }
-                .padding(.horizontal, 7)
+                .padding(.horizontal, DropdownMetrics.rowInset)
                 .padding(.vertical, 4)
             }
-            .frame(height: min(260, matchingLists.isEmpty ? 62 : CGFloat(matchingLists.count) * 38 + 8))
+            .scrollIndicators(.hidden)
+            .frame(height: min(260, matchingLists.isEmpty ? 62 : CGFloat(matchingLists.count) * DropdownMetrics.rowStride + 8))
+
+            Divider().opacity(0.45).padding(.horizontal, 12)
 
             Text("Choose the lists shown in your reminders.")
                 .font(.system(size: 10))
@@ -95,7 +57,7 @@ struct ListPickerView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
         }
-        .frame(width: 272)
+        .frame(width: DropdownMetrics.width)
         .liquidGlassGrouping()
         .onExitCommand(perform: onClose)
     }
@@ -107,12 +69,7 @@ struct ListPickerView: View {
             settings.setListHidden(identifier, visible)
         } label: {
             HStack(spacing: 10) {
-                Image(systemName: "list.bullet")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color(cgColor: calendar.cgColor))
-                    .frame(width: 24, height: 24)
-                    .background(Color(cgColor: calendar.cgColor).opacity(0.12),
-                                in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                DropdownIcon(systemImage: "list.bullet", color: Color(cgColor: calendar.cgColor))
                 Text(calendar.title)
                     .font(.system(size: 12, weight: visible ? .medium : .regular))
                     .foregroundStyle(visible ? .primary : .secondary)
@@ -122,11 +79,8 @@ struct ListPickerView: View {
                     .font(.system(size: 11))
                     .monospacedDigit()
                     .foregroundStyle(.tertiary)
-                Image(systemName: visible ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(visible ? Color.accentColor : Color.secondary.opacity(0.35))
+                DropdownSelectionMark(selected: visible)
             }
-            .frame(height: 36)
         }
         .buttonStyle(DropdownRowStyle(selected: visible))
         .accessibilityLabel("\(calendar.title), \(count) reminders")

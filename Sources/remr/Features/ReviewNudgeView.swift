@@ -62,6 +62,7 @@ struct ReviewNudgeCard: View {
     var waveAngle: Double = -12
     var rayAngle: Double = 0
     var sunAngle: Double = 0
+    var quickAddShortcut: String = ""
     var onReview: () -> Void = {}
     var onDismiss: () -> Void = {}
 
@@ -82,16 +83,27 @@ struct ReviewNudgeCard: View {
                         ReviewSunView(waveAngle: waveAngle, rayAngle: rayAngle, sunAngle: sunAngle)
                             .scaleEffect(min(0.42, (height - 6) / 62))
                             .frame(width: 32, height: min(26, height - 6))
-                        Text("A little check-in?")
-                            .font(.system(size: 10.5, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.9))
-                            .fixedSize()
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("A little check-in?")
+                                .font(.system(size: 10.5, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.9))
+                                .fixedSize()
+                            if !quickAddShortcut.isEmpty {
+                                Text(quickAddShortcut)
+                                    .font(.system(size: 9, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.55))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.7)
+                            }
+                        }
                     }
+                    .padding(.horizontal, 10)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Review your reminders")
+                .accessibilityHint(quickAddShortcut.isEmpty ? "" : "New note shortcut: \(quickAddShortcut)")
                 .help("Open remr to review your reminders")
                 .offset(x: wingWidth * (1 - expansion))
                 .frame(width: wingWidth, height: height)
@@ -152,6 +164,7 @@ struct ReviewNudgeView: View {
     let wingWidth: CGFloat
     let height: CGFloat
     @ObservedObject var presentation: ReviewNudgePresentation
+    @ObservedObject var settings: SettingsStore
     let onReview: () -> Void
     let onDismiss: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -163,6 +176,7 @@ struct ReviewNudgeView: View {
                         expansion: presentation.expanded ? 1 : 0,
                         waveAngle: waving ? 16 : -12, rayAngle: turning ? 24 : 0,
                         sunAngle: reduceMotion ? 0 : (turning ? 12 : -8),
+                        quickAddShortcut: settings.combo(for: .quickAdd).displayString,
                         onReview: onReview, onDismiss: onDismiss)
             .onAppear {
                 DispatchQueue.main.async {

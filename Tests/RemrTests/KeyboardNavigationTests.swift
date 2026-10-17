@@ -645,10 +645,10 @@ final class KeyboardNavigationTests: XCTestCase {
         )
     }
 
-    func testRouterSpaceScrollsPage() {
+    func testRouterSpaceFocusesTitle() {
         XCTAssertEqual(
             KeyboardRouter.action(keyCode: 49, heldKeyCodes: [49], context: context()),
-            .scrollPage(1)
+            .focusTitle
         )
         XCTAssertEqual(
             KeyboardRouter.action(keyCode: 49, heldKeyCodes: [56, 49], context: context()),
@@ -656,6 +656,10 @@ final class KeyboardNavigationTests: XCTestCase {
         )
         XCTAssertEqual(
             KeyboardRouter.action(keyCode: 49, heldKeyCodes: [49], context: context(textFieldFocused: true)),
+            .none
+        )
+        XCTAssertEqual(
+            KeyboardRouter.action(keyCode: 49, heldKeyCodes: [49], context: context(searchFieldFocused: true)),
             .none
         )
     }
@@ -824,14 +828,34 @@ final class KeyboardNavigationTests: XCTestCase {
     }
 
 
-    func testPomodoroOpensFromTheAutofocusedEmptyTitle() {
+    func testPomodoroPShortcutDoesNotInterceptComposerTyping() {
         var ctx = context(textFieldFocused: true)
         ctx.pomodoroEnabled = true
         ctx.emptyTitleFieldFocused = true
-        XCTAssertEqual(KeyboardRouter.action(keyCode: 35, heldKeyCodes: [35], context: ctx), .togglePomodoro)
-        XCTAssertEqual(KeyboardRouter.action(keyCode: 36, heldKeyCodes: [36], context: ctx), .none)
+        XCTAssertEqual(KeyboardRouter.action(keyCode: 35, heldKeyCodes: [35], context: ctx), .none)
+
+        // P should also pass through while another composer field is focused.
         ctx.emptyTitleFieldFocused = false
         XCTAssertEqual(KeyboardRouter.action(keyCode: 35, heldKeyCodes: [35], context: ctx), .none)
+
+        // The bare shortcut still opens the timer while browsing with no editor focused.
+        ctx.textFieldFocused = false
+        XCTAssertEqual(KeyboardRouter.action(keyCode: 35, heldKeyCodes: [35], context: ctx), .togglePomodoro)
+    }
+
+    func testCalendarShortcutRemainsBrowsingOnly() {
+        var ctx = context()
+        XCTAssertEqual(KeyboardRouter.action(keyCode: 8, heldKeyCodes: [8], context: ctx), .openCalendar)
+
+        ctx.calendarPresented = true
+        XCTAssertEqual(KeyboardRouter.action(keyCode: 8, heldKeyCodes: [8], context: ctx), .showMainReminders)
+
+        ctx.calendarPresented = false
+        ctx.textFieldFocused = true
+        XCTAssertEqual(KeyboardRouter.action(keyCode: 8, heldKeyCodes: [8], context: ctx), .none)
+        ctx.textFieldFocused = false
+        ctx.searchFieldFocused = true
+        XCTAssertEqual(KeyboardRouter.action(keyCode: 8, heldKeyCodes: [8], context: ctx), .none)
     }
 
     func testOpenPomodoroOwnsToggleAndStartDespiteBackgroundFocus() {

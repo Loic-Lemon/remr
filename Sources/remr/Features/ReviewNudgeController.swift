@@ -42,7 +42,7 @@ final class ReviewNudgeController {
     private var workspaceObservers: [NSObjectProtocol] = []
 
     init(store: ReminderStore, settings: SettingsStore,
-         defaults: UserDefaults = .standard,
+         defaults: UserDefaults = DemoEnvironment.defaults,
          isBusy: @escaping () -> Bool, onReview: @escaping () -> Void) {
         self.store = store
         self.settings = settings
@@ -180,12 +180,12 @@ final class ReviewNudgeController {
         let centreX = screen.auxiliaryTopLeftArea.flatMap { left in
             screen.auxiliaryTopRightArea.map { (left.maxX + $0.minX) / 2 }
         } ?? screen.frame.midX
-        let wingWidth: CGFloat = 156
+        let wingWidth: CGFloat = 196
         let width = housingWidth + wingWidth * 2
         let presentation = ReviewNudgePresentation()
         self.presentation = presentation
         let root = ReviewNudgeView(housingWidth: housingWidth, wingWidth: wingWidth, height: height,
-                                  presentation: presentation,
+                                  presentation: presentation, settings: settings,
                                   onReview: { [weak self] in
                                       guard let self else { return }
                                       self.onReview()

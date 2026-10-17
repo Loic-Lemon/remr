@@ -107,6 +107,33 @@ final class ReminderStore: ObservableObject {
 
     /// Single shared EventKit store instance (Apple requires one per process).
     private let store = EKEventStore()
+    private var demoData: DemoReminderData?
+
+    init(demoMode: Bool = DemoEnvironment.isEnabled) {
+        if demoMode || DemoEnvironment.isEnabled { demoData = DemoReminderData(eventStore: store) }
+    }
+
+    private func calendar(withIdentifier identifier: String) -> EKCalendar? {
+        if let demoData { return demoData.calendars.first { $0.calendarIdentifier == identifier } }
+        return store.calendar(withIdentifier: identifier)
+    }
+
+    private func defaultCalendar() -> EKCalendar? {
+        if let demoData { return demoData.calendars.first }
+        return store.defaultCalendarForNewReminders()
+    }
+
+    /// The single persistence boundary. Demo objects must never reach EventKit.save.
+    private func save(_ reminder: EKReminder) throws {
+        if let demoData {
+            if !demoData.reminders.contains(where: { $0.calendarItemIdentifier == reminder.calendarItemIdentifier }) {
+                demoData.reminders.append(reminder)
+            }
+            return
+        }
+        try store.save(reminder, commit: true)
+    }
+
     private var refreshTimer: Timer?
     private var eventStoreObserver: NSObjectProtocol?
     /// Bumped on every refresh() so a stale in-flight fetch (started before a
@@ -123,6 +150,7 @@ final class ReminderStore: ObservableObject {
     // MARK: - Lifecycle
 
     func start() {
+        if demoData != nil { accessState = .authorized; refresh(); return }
         loadDeleted()
         eventStoreObserver = NotificationCenter.default.addObserver(forName: .EKEventStoreChanged, object: store, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
@@ -136,6 +164,7 @@ final class ReminderStore: ObservableObject {
     // MARK: - Access
 
     func requestAccess() async {
+        if demoData != nil { accessState = .authorized; refresh(); return }
         let status = EKEventStore.authorizationStatus(for: .reminder)
         if #available(macOS 14.0, *) {
             switch status {
@@ -203,6 +232,21 @@ final class ReminderStore: ObservableObject {
     // MARK: - Fetching
 
     func refresh() {
+        if let demoData {
+            allReminders = demoData.reminders.sorted { Self.dueAscending($0, $1, .current) }
+            completedReminders = allReminders.filter(\.isCompleted).sorted {
+                ($0.completionDate ?? .distantPast) > ($1.completionDate ?? .distantPast)
+            }
+            let today = Calendar.current.startOfDay(for: Date())
+            let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: today)!
+            let dates = allReminders.filter { !$0.isCompleted }.compactMap {
+                $0.dueDateComponents.flatMap { Calendar.current.date(from: $0) }
+            }
+            overdueCount = dates.filter { $0 < today }.count
+            dueTodayCount = dates.filter { $0 >= today && $0 < tomorrow }.count
+            lastSyncDate = Date()
+            return
+        }
         // EventKit's date-range predicates misfile all-day reminders, so the
         // chronological sections are bucketed in Swift from `allReminders`
         // (ReminderSection in ReminderSections.swift), never from predicates.
@@ -282,7 +326,8 @@ final class ReminderStore: ObservableObject {
     }
 
     func reminder(withIdentifier identifier: String) -> EKReminder? {
-        store.calendarItem(withIdentifier: identifier) as? EKReminder
+        if let demoData { return demoData.reminders.first { $0.calendarItemIdentifier == identifier } }
+        return store.calendarItem(withIdentifier: identifier) as? EKReminder
     }
 
     // MARK: - Mutations
@@ -290,7 +335,11 @@ final class ReminderStore: ObservableObject {
     func deleteReminder(_ reminder: EKReminder) async throws -> DeletedReminder? {
         // EventKit fields must be read while the item still exists.
         let snapshot = snapshotForDeletion(reminder)
-        try store.remove(reminder, commit: true)
+        if let demoData {
+            demoData.reminders.removeAll { $0.calendarItemIdentifier == reminder.calendarItemIdentifier }
+        } else {
+            try store.remove(reminder, commit: true)
+        }
         if let snapshot {
             recentlyDeleted.insert(snapshot, at: 0)
             persistDeleted()
@@ -334,7 +383,7 @@ final class ReminderStore: ObservableObject {
         let recreated = try await create(from: draft)
         recreated.isCompleted = deleted.isCompleted
         recreated.completionDate = deleted.isCompleted ? deleted.completionDate : nil
-        try store.save(recreated, commit: true)
+        try save(recreated)
         refresh()
         recentlyDeleted.removeAll { $0.id == deleted.id }
         persistDeleted()
@@ -355,6 +404,7 @@ final class ReminderStore: ObservableObject {
     }
 
     private func loadDeleted() {
+        guard demoData == nil else { return }
         guard let data = try? Data(contentsOf: deletedFileURL) else { return }
         if let items = try? JSONDecoder().decode([DeletedReminder].self, from: data) {
             recentlyDeleted = items.sorted { $0.deletedAt > $1.deletedAt }
@@ -362,6 +412,7 @@ final class ReminderStore: ObservableObject {
     }
 
     private func persistDeleted() {
+        guard demoData == nil else { return }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(recentlyDeleted) else { return }
@@ -379,7 +430,7 @@ final class ReminderStore: ObservableObject {
             latest.completionDate = nil
         }
         do {
-            try store.save(latest, commit: true)
+            try save(latest)
             refresh()
             return (wasCompleted: wasCompleted, isCompleted: latest.isCompleted)
         } catch {
@@ -417,7 +468,7 @@ final class ReminderStore: ObservableObject {
         }
 
         do {
-            try store.save(reminder, commit: true)
+            try save(reminder)
             refresh()
         } catch {
             reminder.title = originalTitle
@@ -429,7 +480,7 @@ final class ReminderStore: ObservableObject {
 
     @discardableResult
     func create(from draft: ReminderDraft) async throws -> EKReminder {
-        let calendar = draft.calendarIdentifier.flatMap { store.calendar(withIdentifier: $0) }
+        let calendar = draft.calendarIdentifier.flatMap { self.calendar(withIdentifier: $0) }
         let location: EKStructuredLocation?
         switch draft.location {
         case .none:
@@ -462,9 +513,9 @@ final class ReminderStore: ObservableObject {
             replacementLocation = Self.structuredLocation(from: deletedLocation)
         }
 
-        let calendar = draft.calendarIdentifier.flatMap { store.calendar(withIdentifier: $0) }
+        let calendar = draft.calendarIdentifier.flatMap { self.calendar(withIdentifier: $0) }
             ?? latest.calendar
-            ?? store.defaultCalendarForNewReminders()
+            ?? defaultCalendar()
             ?? reminderCalendars().first
         guard let calendar else { throw ReminderStoreError.noCalendar }
 
@@ -491,7 +542,7 @@ final class ReminderStore: ObservableObject {
         }
 
         do {
-            try store.save(latest, commit: true)
+            try save(latest)
             refresh()
         } catch {
             latest.title = originalTitle
@@ -516,7 +567,7 @@ final class ReminderStore: ObservableObject {
         let originalDueDate = latest.dueDateComponents
         latest.dueDateComponents = Self.dateComponents(for: date, hasTime: hasTime)
         do {
-            try store.save(latest, commit: true)
+            try save(latest)
             refresh()
         } catch {
             latest.dueDateComponents = originalDueDate
@@ -535,7 +586,7 @@ final class ReminderStore: ObservableObject {
                                                                          to: targetDay,
                                                                          calendar: .current)
         do {
-            try store.save(latest, commit: true)
+            try save(latest)
             refresh()
         } catch {
             latest.dueDateComponents = originalDueDate
@@ -561,15 +612,15 @@ final class ReminderStore: ObservableObject {
         guard let latest = self.reminder(withIdentifier: reminder.calendarItemIdentifier) else {
             throw ReminderStoreError.reminderNotFound
         }
-        let calendar = calendarIdentifier.flatMap { store.calendar(withIdentifier: $0) }
-            ?? store.defaultCalendarForNewReminders()
+        let calendar = calendarIdentifier.flatMap { self.calendar(withIdentifier: $0) }
+            ?? defaultCalendar()
             ?? reminderCalendars().first
         guard let calendar else { throw ReminderStoreError.noCalendar }
 
         let original = latest.calendar
         latest.calendar = calendar
         do {
-            try store.save(latest, commit: true)
+            try save(latest)
             refresh()
         } catch {
             latest.calendar = original
@@ -596,7 +647,7 @@ final class ReminderStore: ObservableObject {
         let reminder = EKReminder(eventStore: store)
         if let calendar {
             reminder.calendar = calendar
-        } else if let defaultCal = store.defaultCalendarForNewReminders() {
+        } else if let defaultCal = defaultCalendar() {
             reminder.calendar = defaultCal
         } else if let first = reminderCalendars().first {
             reminder.calendar = first
@@ -613,7 +664,7 @@ final class ReminderStore: ObservableObject {
             alarm.proximity = .enter
             reminder.addAlarm(alarm)
         }
-        try store.save(reminder, commit: true)
+        try save(reminder)
         refresh()
         return reminder
     }
@@ -680,13 +731,13 @@ final class ReminderStore: ObservableObject {
                 originals.append((change.reminder, change.reminder.title, change.reminder.notes))
                 change.reminder.title = change.title
                 change.reminder.notes = change.notes
-                try store.save(change.reminder, commit: true)
+                try save(change.reminder)
             }
         } catch {
             for original in originals {
                 original.reminder.title = original.title
                 original.reminder.notes = original.notes
-                try? store.save(original.reminder, commit: true)
+                try? save(original.reminder)
             }
             throw error
         }
@@ -696,7 +747,8 @@ final class ReminderStore: ObservableObject {
     // MARK: - Lists
 
     func reminderCalendars() -> [EKCalendar] {
-        store.calendars(for: .reminder)
+        if let demoData { return demoData.calendars }
+        return store.calendars(for: .reminder)
     }
 
     /// Exact normalized match first; else shortest calendar title containing the token.
@@ -723,6 +775,7 @@ final class ReminderStore: ObservableObject {
     // MARK: - Open in Reminders
 
     func openInReminders(_ reminder: EKReminder) {
+        guard demoData == nil else { return }
         let id = reminder.calendarItemIdentifier
         // Reminders.app's declared scheme (hyphens, per its CFBundleURLTypes).
         if let url = URL(string: "x-apple-reminderkit://REMCDReminder/\(id)"),
